@@ -1,0 +1,34 @@
+# Copy to config.yaml and edit. config.yaml is gitignored so your keys never leak.
+
+data:
+  symbol: BTC/USDT
+  timeframe: 1h        # 1m, 5m, 15m, 1h, 4h, 1d
+  exchange: binance    # any ccxt exchange id; public data needs no key
+  limit: 3000          # number of candles to pull
+
+strategy:
+  fast: 20             # fast EMA span
+  slow: 50             # slow EMA span
+  mom_lookback: 24     # momentum lookback in bars
+  atr_period: 14
+
+risk:
+  risk_per_trade: 0.01       # risk 1% of equity to the stop per trade
+  max_position_fraction: 1.0 # never allocate more than 100% of equity
+  atr_stop_mult: 3.0         # stop = entry - 3 * ATR
+  max_drawdown_stop: 0.30    # stop opening trades after a 30% drawdown
+
+execution:
+  initial_cash: 10000
+  fee_rate: 0.001      # 0.10% taker fee
+  slippage: 0.0005     # 0.05% slippage per fill
+
+# LIVE TRADING IS OFF BY DEFAULT AND INTENTIONALLY HARD TO TURN ON.
+# Do not enable until you have (1) a green backtest, (2) walk-forward validation,
+# and (3) a paper-trading run you are happy with. See README "Path to live".
+live:
+  enabled: false
+  mode: paper          # paper | live  -- 'live' additionally requires confirm_live
+  confirm_live: false  # must be literally true to send real orders
+  # API keys are read from environment variables, never from this file:
+  #   export TRADEBOT_API_KEY=...   export TRADEBOT_API_SECRET=...
