@@ -1,8 +1,17 @@
 # TRADEBOT
 
-An automated crypto trading framework built **backtest-first**. The guiding rule of
-this project is simple: *no real money until we are sure of everything.* Every design
+An automated trading framework built **backtest-first**. The guiding rule of this
+project is simple: *no real money until we are sure of everything.* Every design
 decision favors honesty about performance over impressive-looking results.
+
+Two tracks live here:
+
+* **Kalshi (event contracts)** — the current focus. Regulated US prediction markets
+  (`src/kalshi/`), with a real demo/paper sandbox. Natural home for the sports angle.
+* **Crypto (price)** — a trend/momentum framework (`src/`) to move to later.
+
+They are different games (see the Kalshi section) but share the same discipline:
+backtest honestly, model costs, paper-trade first, hard risk limits.
 
 ## What's here
 
@@ -98,9 +107,65 @@ only from `TRADEBOT_API_KEY` / `TRADEBOT_API_SECRET` env vars, never from a file
   trading.
 - This is trading software, not financial advice. The capital decisions are yours.
 
+## Kalshi (event contracts) — the current focus
+
+Kalshi is **not** like crypto. You trade the *probability of an event*, not the price
+of an asset:
+
+| | Crypto | Kalshi |
+|---|---|---|
+| what you trade | price of an asset | probability of a Yes/No event |
+| price meaning | dollars | cents = implied % (63¢ ≈ 63% chance) |
+| settlement | never; you exit | resolves to $1 or $0 |
+| edge comes from | price trends | **better probability estimates**, spread, or arbitrage |
+
+So the edge is *knowing the odds better than the market*. This module supplies all the
+machinery for that — **you supply the probability estimate**, which is where the real
+work and the real alpha live.
+
+```
+src/kalshi/
+  client.py       Signed API client (RSA-PSS). Defaults to the DEMO sandbox.
+  economics.py    Fees, edge, and fractional-Kelly position sizing for binary contracts
+  strategy.py     Value strategy: buy what the market underprices vs a fair probability
+  backtest.py     Replay over resolved markets + a CALIBRATION report
+  paper.py        Demo/paper gating; PROD needs explicit confirm_prod
+```
+
+Run it offline (synthetic markets, no account needed):
+
+```bash
+python scripts/kalshi_backtest.py --skill 0.85   # accurate model -> profits, tight calibration
+python scripts/kalshi_backtest.py --skill 0.0    # useless model  -> loses, calibration exposes it
+python -m pytest tests/test_kalshi.py -q
+```
+
+**Read the calibration table, not the profit.** If your model says "70%" and those
+events happen 70% of the time, the edge is real. If they happen 45% of the time, the
+profit is a mirage no matter how good the headline number looks — the useless-model run
+above prints a fat "predicted edge" while being completely wrong.
+
+### Connecting your account (when you're ready)
+
+1. Generate an API key in Kalshi settings; download the RSA private key.
+2. `export KALSHI_KEY_ID=...` and `export KALSHI_PRIVATE_KEY_PATH=/path/to/key.pem`.
+3. The client defaults to the **DEMO** sandbox. Prove the strategy there first; PROD
+   requires `env="prod"` *and* `confirm_prod=True`.
+
+> Note: this dev sandbox's network blocks Kalshi's servers, so live calls run in your
+> environment. The signing logic is unit-tested offline, so the client is correct;
+> it just needs a network that can reach Kalshi.
+
+### The sports angle
+
+Your instinct is the natural first alpha source: sportsbooks set very sharp odds, and
+Kalshi's prices can lag or diverge from them. A `ProbabilitySource` that pulls devigged
+sportsbook odds and feeds them into `strategy.py` is the concrete next build.
+
 ## Next steps we can build
 
-- More strategies (mean reversion, breakout, DCA/grid) behind the same `Strategy` API.
-- A parameter-robustness sweep to check the strategy isn't perched on a fragile optimum.
-- Telegram/Discord alerting and a paper-trading loop.
-- The sports/event-contract idea (Kalshi-style) — same discipline, different data feed.
+- **Kalshi:** a real `ProbabilitySource` from devigged sportsbook odds (the sports edge).
+- **Kalshi:** a demo paper-trading loop that reads live markets and places sandbox orders.
+- **Kalshi:** collect resolved-market history to backtest on real (not synthetic) data.
+- **Crypto:** more strategies (mean reversion, breakout, DCA/grid) behind the `Strategy` API.
+- Telegram/Discord alerting and hard per-day loss limits shared across both tracks.

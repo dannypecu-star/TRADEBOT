@@ -2,6 +2,8 @@
 config.yaml
 .env
 *.key
+*.pem            # Kalshi RSA private keys -- NEVER commit these
+kalshi_*.pem
 
 # Cached market data
 data/cache/*.parquet
