@@ -82,6 +82,18 @@ def test_payload_devigs_to_consensus():
     assert probs["Lakers"] > 0.55  # a -150ish favorite
 
 
+def test_odds_cache_read_write_and_ttl(tmp_path):
+    from src.kalshi.sources.theoddsapi import _read_cache, _write_cache
+
+    path = str(tmp_path / "odds.json")
+    assert _read_cache(path, ttl_seconds=300) is None  # nothing cached yet
+    _write_cache(path, SAMPLE_PAYLOAD)
+    fresh = _read_cache(path, ttl_seconds=300)
+    assert fresh is not None and fresh[0]["id"] == "game1"
+    # A zero/expired TTL must force a miss so we don't serve stale odds.
+    assert _read_cache(path, ttl_seconds=0) is None
+
+
 def test_source_feeds_strategy():
     fair = fair_probabilities_from_payload(SAMPLE_PAYLOAD)
     ticker_map = {"KXNBA-LAL": ("game1", "Lakers")}

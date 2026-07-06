@@ -14,18 +14,55 @@ explicit in ``ticker_map`` rather than guessed, so it is auditable.
 """
 from __future__ import annotations
 
+import json
 import os
+import time
 from collections import defaultdict
 from typing import Optional
 
 from ..odds import consensus, devig_american, weighted_consensus
 
+_CACHE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "cache")
+)
+
+
+def _cache_file(sport: str, regions: str, markets: str) -> str:
+    return os.path.join(_CACHE_DIR, f"odds_{sport}_{regions}_{markets}.json")
+
+
+def _read_cache(path: str, ttl_seconds: float) -> Optional[list[dict]]:
+    """Return cached payload if the file exists and is younger than ``ttl_seconds``."""
+    if ttl_seconds <= 0 or not os.path.exists(path):
+        return None
+    if time.time() - os.path.getmtime(path) > ttl_seconds:
+        return None
+    with open(path, "r") as fh:
+        return json.load(fh)
+
+
+def _write_cache(path: str, data: list[dict]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        json.dump(data, fh)
+
 
 class TheOddsAPIClient:
+    """Client for The Odds API. Keep to 1 market x 1 region to spend 1 credit per call.
+
+    Caching (``cache_ttl`` seconds) means repeated checks within the window reuse the
+    last payload instead of spending another credit -- the simplest way to stay inside
+    the free 500-credit/month tier. ``credits_remaining`` is populated from the API's
+    response headers after each live call so you always know your budget.
+    """
+
     BASE = "https://api.the-odds-api.com/v4"
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, cache_ttl: float = 300.0):
         self.api_key = api_key or os.environ.get("THE_ODDS_API_KEY")
+        self.cache_ttl = cache_ttl
+        self.credits_remaining: Optional[int] = None
+        self.credits_used: Optional[int] = None
 
     def fetch_odds(
         self,
@@ -34,7 +71,15 @@ class TheOddsAPIClient:
         markets: str = "h2h",
         odds_format: str = "american",
     ) -> list[dict]:
-        """Fetch current odds for a sport. Returns The Odds API's list-of-games JSON."""
+        """Fetch current odds for a sport. Returns The Odds API's list-of-games JSON.
+
+        Serves a fresh cached payload without spending a credit when possible.
+        """
+        cache_path = _cache_file(sport, regions, markets)
+        cached = _read_cache(cache_path, self.cache_ttl)
+        if cached is not None:
+            return cached
+
         if not self.api_key:
             raise RuntimeError("Set THE_ODDS_API_KEY (free key from the-odds-api.com).")
         import requests
@@ -51,7 +96,15 @@ class TheOddsAPIClient:
             timeout=30,
         )
         resp.raise_for_status()
-        return resp.json()
+        # The Odds API reports quota usage in response headers.
+        rem = resp.headers.get("x-requests-remaining")
+        used = resp.headers.get("x-requests-used")
+        self.credits_remaining = int(rem) if rem is not None else None
+        self.credits_used = int(used) if used is not None else None
+
+        data = resp.json()
+        _write_cache(cache_path, data)
+        return data
 
 
 def fair_probabilities_from_payload(

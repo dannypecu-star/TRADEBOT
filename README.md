@@ -149,7 +149,11 @@ above prints a fat "predicted edge" while being completely wrong.
 
 1. Generate an API key in Kalshi settings; download the RSA private key.
 2. `export KALSHI_KEY_ID=...` and `export KALSHI_PRIVATE_KEY_PATH=/path/to/key.pem`.
-3. The client defaults to the **DEMO** sandbox. Prove the strategy there first; PROD
+3. Verify everything end to end (read-only, places no orders):
+   ```bash
+   python scripts/kalshi_smoke_test.py     # checks connectivity, market reads, and signing
+   ```
+4. The client defaults to the **DEMO** sandbox. Prove the strategy there first; PROD
    requires `env="prod"` *and* `confirm_prod=True`.
 
 > Note: this dev sandbox's network blocks Kalshi's servers, so live calls run in your
@@ -176,6 +180,12 @@ fair = fair_probabilities_from_payload(payload)                   # devigged con
 source = SportsbookProbabilitySource(fair, ticker_map={...})      # map Kalshi tickers -> (game, side)
 # feed source.fair_probability(ticker) into src/kalshi/strategy.evaluate_market(...)
 ```
+
+**Staying inside the free tier:** The Odds API's free plan is 500 credits/month, no card
+required. A call costs `markets × regions` credits, so sticking to `h2h` + `us` is 1
+credit each (~16/day). `TheOddsAPIClient` caches responses (`cache_ttl`, default 5 min)
+so repeated checks don't spend credits, and exposes `credits_remaining` from the API
+headers so you always know your budget. No payment needed to build or validate.
 
 The odds math is fully unit-tested offline (`tests/test_odds.py`). The one piece that
 needs live data from both sides is `ticker_map` — matching a Kalshi ticker to the right
