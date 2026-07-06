@@ -145,6 +145,28 @@ events happen 70% of the time, the edge is real. If they happen 45% of the time,
 profit is a mirage no matter how good the headline number looks — the useless-model run
 above prints a fat "predicted edge" while being completely wrong.
 
+### Paper trading on the demo sandbox
+
+Once the smoke test passes, run the value strategy against live demo markets — with no
+external odds API, using your own hand-entered probabilities so you can prove the whole
+loop first:
+
+```bash
+# 1) write fair probabilities for a few open tickers (from smoke_test output):
+echo '{"KXNBA-25JUL10-LAL": 0.62, "KXMLB-25JUL10-NYY": 0.55}' > my_probs.json
+
+# 2) dry run — logs the orders it WOULD place, sends nothing (default):
+python scripts/kalshi_paper_trade.py --probs my_probs.json
+
+# 3) once you trust the output, place real DEMO orders (fake money):
+python scripts/kalshi_paper_trade.py --probs my_probs.json --live
+```
+
+The loop (`src/kalshi/trader.py`) is deliberately boring and safe: **dry-run by
+default**, a **position cap**, a **daily loss stop**, it **won't double-buy** a market
+you already hold, and every thin edge is checked against fees before trading. It's fully
+unit-tested offline against a fake client (`tests/test_trader.py`).
+
 ### Connecting your account (when you're ready)
 
 1. Generate an API key in Kalshi settings; download the RSA private key.

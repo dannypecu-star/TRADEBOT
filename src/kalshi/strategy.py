@@ -44,14 +44,17 @@ def evaluate_market(
     bankroll: float,
     sizing: SizingConfig,
     fee_rate: float = 0.07,
+    no_price: float | None = None,
 ) -> Signal | None:
     """Decide whether (and how much) to trade a single market.
 
     Considers both sides: buying Yes at ``yes_price`` when the model thinks Yes is
-    underpriced, or buying No at ``1 - yes_price`` when the model thinks Yes is
-    overpriced. Returns the better-edged actionable side, or None.
+    underpriced, or buying No when the model thinks Yes is overpriced. ``no_price``
+    defaults to ``1 - yes_price``; pass the real No ask to account honestly for the
+    bid/ask spread. Returns the better-edged actionable side, or None.
     """
-    no_price = 1.0 - yes_price
+    if no_price is None:
+        no_price = 1.0 - yes_price
 
     yes_edge = edge(fair_prob, yes_price, fee_rate)
     no_edge = edge(1.0 - fair_prob, no_price, fee_rate)
