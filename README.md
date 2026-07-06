@@ -156,16 +156,35 @@ above prints a fat "predicted edge" while being completely wrong.
 > environment. The signing logic is unit-tested offline, so the client is correct;
 > it just needs a network that can reach Kalshi.
 
-### The sports angle
+### The sports edge (odds -> fair probability)
 
-Your instinct is the natural first alpha source: sportsbooks set very sharp odds, and
-Kalshi's prices can lag or diverge from them. A `ProbabilitySource` that pulls devigged
-sportsbook odds and feeds them into `strategy.py` is the concrete next build.
+The alpha source is built: `src/kalshi/odds.py` converts sportsbook odds to a devigged
+fair probability, and `src/kalshi/sources/theoddsapi.py` wires that to
+[The Odds API](https://the-odds-api.com) (free tier: 500 requests/month) and exposes it
+as a `ProbabilitySource` the strategy consumes.
+
+**Devigging** removes the bookmaker margin: a book quoting both sides at implied 52.4%
+sums to 104.8%; dividing each by the total recovers the fair 50/50. If sharp books say
+a team is 50% and Kalshi prices it at 45¢, that gap is the edge.
+
+```python
+from src.kalshi.sources.theoddsapi import (TheOddsAPIClient,
+    fair_probabilities_from_payload, SportsbookProbabilitySource)
+
+payload = TheOddsAPIClient().fetch_odds(sport="basketball_nba")   # needs THE_ODDS_API_KEY
+fair = fair_probabilities_from_payload(payload)                   # devigged consensus per game
+source = SportsbookProbabilitySource(fair, ticker_map={...})      # map Kalshi tickers -> (game, side)
+# feed source.fair_probability(ticker) into src/kalshi/strategy.evaluate_market(...)
+```
+
+The odds math is fully unit-tested offline (`tests/test_odds.py`). The one piece that
+needs live data from both sides is `ticker_map` — matching a Kalshi ticker to the right
+game/outcome — which is kept explicit rather than guessed.
 
 ## Next steps we can build
 
-- **Kalshi:** a real `ProbabilitySource` from devigged sportsbook odds (the sports edge).
+- **Kalshi:** build the `ticker_map` (Kalshi market <-> sportsbook game) for a live slate.
 - **Kalshi:** a demo paper-trading loop that reads live markets and places sandbox orders.
-- **Kalshi:** collect resolved-market history to backtest on real (not synthetic) data.
+- **Kalshi:** collect resolved-market history to backtest the sports edge on real data.
 - **Crypto:** more strategies (mean reversion, breakout, DCA/grid) behind the `Strategy` API.
 - Telegram/Discord alerting and hard per-day loss limits shared across both tracks.
