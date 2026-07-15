@@ -130,6 +130,11 @@ src/kalshi/
   strategy.py     Value strategy: buy what the market underprices vs a fair probability
   backtest.py     Replay over resolved markets + a CALIBRATION report
   paper.py        Demo/paper gating; PROD needs explicit confirm_prod
+  weather.py      Weather edge finder: rank weather markets by net edge
+  sources/
+    theoddsapi.py     The sports edge: sportsbook odds -> devigged fair probability
+    openmeteo.py      The weather edge: Open-Meteo ensemble -> temperature distribution
+    manual.py         Hand-entered probabilities, for validating the loop with no API
 ```
 
 Run it offline (synthetic markets, no account needed):
@@ -213,10 +218,57 @@ The odds math is fully unit-tested offline (`tests/test_odds.py`). The one piece
 needs live data from both sides is `ticker_map` — matching a Kalshi ticker to the right
 game/outcome — which is kept explicit rather than guessed.
 
+### The weather edge (forecast -> fair probability)
+
+Kalshi's daily weather markets (e.g. *"Highest temperature in NYC today"*) are some of
+its cleanest edges: the outcome is driven by physics a public model already forecasts,
+and the market is often slower to move than the forecast. The alpha source lives in
+`src/kalshi/sources/openmeteo.py` and the edge hunter in `src/kalshi/weather.py`.
+
+The key idea is to trade a **distribution**, not a point forecast.
+[Open-Meteo](https://open-meteo.com)'s free **ensemble** API (no key required) returns
+~31 members — each a plausible run of the atmosphere. We take each member's daily-max
+temperature, smooth the handful of samples with a Gaussian kernel into a proper CDF, and
+integrate it over whatever strike a market offers to get a calibrated `P(Yes)`:
+
+```bash
+# Hunt: rank the best edges across every weather city (read-only, no credentials):
+python scripts/kalshi_weather_bot.py
+
+# Narrow the cities and demand at least 3¢ of net edge after fees:
+python scripts/kalshi_weather_bot.py --series KXHIGHNY KXHIGHCHI --min-edge 0.03
+
+# Paper-trade the found edges on the demo sandbox (dry-run by default):
+python scripts/kalshi_weather_bot.py --trade          # logs orders, sends nothing
+python scripts/kalshi_weather_bot.py --trade --live   # places DEMO orders (fake money)
+
+# No network or account yet? Watch a full $100 session on SYNTHETIC data:
+python scripts/kalshi_weather_paper_sim.py --bankroll 100
+```
+
+Sample output — each market scored, both sides considered, ranked fattest-edge first:
+
+```
+KXHIGHNY-25JUL15-B88T92  New York City (Central Park)  88-92F  fair=98.5%  YES @ 0.40  edge=$+0.565  x124  (fc 90.0+/-0.8F)
+KXHIGHNY-25JUL15-T95     New York City (Central Park)  >= 95F  fair= 0.0%  NO  @ 0.72  edge=$+0.260  x69   (fc 90.0+/-0.8F)
+```
+
+The distribution math, strike→probability mapping, and edge ranking are fully unit-tested
+offline against a sample ensemble payload (`tests/test_weather.py`). Two things to verify
+before trusting the numbers with real money:
+
+- **Resolution station.** Each market settles at one specific weather station; the
+  forecast must use *its* coordinates. `STATIONS` in `openmeteo.py` maps each series to
+  the station we believe it uses — confirm against the market rules, since a wrong station
+  silently poisons every probability.
+- **Calibration.** As always here, read the calibration, not the headline edge. Backtest
+  the forecast against resolved weather markets before believing a 98%.
+
 ## Next steps we can build
 
 - **Kalshi:** build the `ticker_map` (Kalshi market <-> sportsbook game) for a live slate.
 - **Kalshi:** a demo paper-trading loop that reads live markets and places sandbox orders.
-- **Kalshi:** collect resolved-market history to backtest the sports edge on real data.
+- **Kalshi:** collect resolved-market history to backtest the sports *and* weather edges on real data.
+- **Kalshi:** extend the weather bot beyond daily highs (lows, rain, snow) and verify each resolution station.
 - **Crypto:** more strategies (mean reversion, breakout, DCA/grid) behind the `Strategy` API.
 - Telegram/Discord alerting and hard per-day loss limits shared across both tracks.
