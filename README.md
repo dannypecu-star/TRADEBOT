@@ -241,6 +241,9 @@ python scripts/kalshi_weather_bot.py --series KXHIGHNY KXHIGHCHI --min-edge 0.03
 # Paper-trade the found edges on the demo sandbox (dry-run by default):
 python scripts/kalshi_weather_bot.py --trade          # logs orders, sends nothing
 python scripts/kalshi_weather_bot.py --trade --live   # places DEMO orders (fake money)
+
+# No network or account yet? Watch a full $100 session on SYNTHETIC data:
+python scripts/kalshi_weather_paper_sim.py --bankroll 100
 ```
 
 Sample output — each market scored, both sides considered, ranked fattest-edge first:
