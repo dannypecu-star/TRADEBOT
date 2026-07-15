@@ -169,8 +169,21 @@ def test_trade_log_records_and_summarizes(tmp_path):
     assert s["n_trades"] == 3
     assert s["hit_rate"] == 2 / 3
     # 20 winning contracts pay $20; 10 losing contracts cost their price. Net positive.
-    assert s["total_pnl"] > 0
+    assert s["settled_pnl"] > 0
     assert isinstance(s["calibration"], list)
+
+
+def test_early_exits_are_excluded_from_calibration_but_counted_in_pnl(tmp_path):
+    path = str(tmp_path / "trades.csv")
+    log = TradeLogger(path)
+    log.log_settlement("M1", "yes", 0.55, 0.80, 10, outcome=1, asset="BTC")   # resolution win
+    log.log_exit("M2", "yes", entry_price=0.90, exit_price=0.55, contracts=10, asset="BTC")  # stop-loss
+    s = summarize(path)
+    assert s["n_trades"] == 1                 # only the resolution counts for the model test
+    assert s["n_exits"] == 1
+    assert s["exit_pnl"] < 0                   # sold at 0.55 what cost 0.90 -> loss
+    # Total P&L reflects both; settled P&L reflects only the resolution.
+    assert abs(s["total_pnl"] - (s["settled_pnl"] + s["exit_pnl"])) < 1e-9
 
 
 if __name__ == "__main__":

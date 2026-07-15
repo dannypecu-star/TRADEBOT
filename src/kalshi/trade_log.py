@@ -30,7 +30,7 @@ from .economics import fee_per_contract
 
 FIELDNAMES = [
     "timestamp",       # ISO-8601 UTC
-    "status",          # SIGNAL | SETTLED
+    "status",          # SIGNAL | SETTLED | EXIT
     "ticker",
     "asset",
     "spot",            # live underlying at decision time
@@ -155,6 +155,41 @@ class TradeLogger:
             "pnl": payout - cost,
         })
 
+    def log_exit(
+        self,
+        ticker: str,
+        side: str,
+        entry_price: float,
+        exit_price: float,
+        contracts: int,
+        model_prob: float = 0.0,
+        asset: str = "",
+        fee_rate: float = 0.07,
+        timestamp: str | None = None,
+    ) -> None:
+        """Record an early exit (e.g. stop-loss) that closed before resolution.
+
+        An exit is a risk action, not a market resolution, so it carries no
+        ``outcome`` and is *excluded* from calibration and model-edge stats -- it would
+        otherwise corrupt the test of whether the probabilities are accurate. It still
+        counts toward total realized P&L. Both entry and exit pay a fee.
+        """
+        cost = contracts * entry_price + fee_per_contract(entry_price, fee_rate) * contracts
+        revenue = contracts * exit_price - fee_per_contract(exit_price, fee_rate) * contracts
+        self._write({
+            "timestamp": timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "status": "EXIT",
+            "ticker": ticker,
+            "asset": asset,
+            "model_prob": model_prob,
+            "market_price": entry_price,
+            "side": side,
+            "contracts": contracts,
+            "cost": cost,
+            "payout": revenue,
+            "pnl": revenue - cost,
+        })
+
 
 def _read_settled(path: str) -> list[LoggedTrade]:
     out: list[LoggedTrade] = []
@@ -177,6 +212,21 @@ def _read_settled(path: str) -> list[LoggedTrade]:
     return out
 
 
+def _read_exit_pnl(path: str) -> tuple[int, float]:
+    """Total P&L and count of early-exit rows (excluded from calibration)."""
+    n, pnl = 0, 0.0
+    with open(path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("status") != "EXIT":
+                continue
+            try:
+                pnl += float(row["pnl"])
+                n += 1
+            except (ValueError, KeyError):
+                continue
+    return n, pnl
+
+
 def summarize(path: str, n_buckets: int = 5) -> dict:
     """Compute realized-vs-predicted edge, hit rate, and calibration from SETTLED rows.
 
@@ -189,9 +239,11 @@ def summarize(path: str, n_buckets: int = 5) -> dict:
         overconfident and the profit is a mirage; fix the model, not the size.
     """
     trades = _read_settled(path)
+    n_exits, exit_pnl = _read_exit_pnl(path)
     n = len(trades)
     if n == 0:
-        return {"n_trades": 0, "note": "no SETTLED rows yet"}
+        return {"n_trades": 0, "n_exits": n_exits, "exit_pnl": exit_pnl,
+                "note": "no SETTLED (held-to-resolution) rows yet"}
 
     total_contracts = sum(t.contracts for t in trades)
     total_pnl = sum(t.pnl for t in trades)
@@ -216,11 +268,14 @@ def summarize(path: str, n_buckets: int = 5) -> dict:
         })
 
     return {
-        "n_trades": n,
+        "n_trades": n,                       # held-to-resolution trades (the model test)
         "total_contracts": total_contracts,
-        "total_pnl": total_pnl,
+        "settled_pnl": total_pnl,            # P&L from resolutions only
+        "n_exits": n_exits,                  # early exits, excluded from calibration
+        "exit_pnl": exit_pnl,
+        "total_pnl": total_pnl + exit_pnl,   # honest bottom line: resolutions + exits
         "hit_rate": sum(t.won for t in trades) / n,
-        "predicted_edge": predicted_edge,
-        "realized_edge": realized_edge,
+        "predicted_edge": predicted_edge,    # dollars/contract the model expected
+        "realized_edge": realized_edge,      # dollars/contract actually earned at resolution
         "calibration": calibration,
     }
