@@ -213,6 +213,43 @@ The odds math is fully unit-tested offline (`tests/test_odds.py`). The one piece
 needs live data from both sides is `ticker_map` — matching a Kalshi ticker to the right
 game/outcome — which is kept explicit rather than guessed.
 
+### The crypto edge (fair value -> probability)
+
+For Kalshi's short-horizon crypto up/down markets (`KXBTC15M`, `KXETH15M`, ...), the
+fair-value model is `src/kalshi/crypto_fair_value.py`. A market resolves Yes if the
+underlying is above a strike at settlement, so its fair Yes-probability is a closed-form
+lognormal `P(spot_at_close > strike | spot_now, minutes_left, volatility)`. That number,
+fed to the same `evaluate_market`, is the *only* real edge here.
+
+> **Why the "correlation pair" idea is a trap.** Buying `BTC_UP + ETH_DOWN` at a combined
+> price costs exactly `P(BTC up) + P(ETH down)` — which *is* the pair's expected payoff.
+> Correlation reshapes the distribution but not its mean, so the pair is zero-EV before
+> fees and negative after. Edge only comes from an individual leg being mispriced against
+> a live fair value. This module produces that fair value.
+
+```python
+from src.kalshi.crypto_fair_value import CryptoFairValueSource, CryptoMarketState, up_probability
+
+up_probability(spot=63120, strike=63000, minutes_left=7, vol_annual=0.6)   # -> 0.83
+# Wire live spot + market metadata into a ProbabilitySource for evaluate_market:
+source = CryptoFairValueSource(lambda ticker: CryptoMarketState("BTC", spot, strike, mins, vol))
+```
+
+The hard input is `vol_annual` (garbage vol in, garbage edge out); `vol_from_typical_move`
+converts an intuitive "0.3% typical 15m move" into annualised sigma. Validate before
+funding anything:
+
+```bash
+python scripts/kalshi_crypto_fair_value.py --spot 63120 --strike 63000 \
+    --minutes 7 --typical-move 0.003 --yes-price 0.62 --bankroll 800   # value + size one leg
+python scripts/kalshi_crypto_fair_value.py --demo-backtest              # calibration proof
+```
+
+`src/kalshi/trade_log.py` records every decision to CSV (model prob, price, inputs) and,
+once markets resolve, reports realized-vs-predicted edge and calibration — so a paper run
+is *measured*, not judged by a balance that a couple of lucky tail events can flatter.
+All of it is unit-tested offline in `tests/test_crypto_fair_value.py`.
+
 ## Next steps we can build
 
 - **Kalshi:** build the `ticker_map` (Kalshi market <-> sportsbook game) for a live slate.
