@@ -213,10 +213,41 @@ The odds math is fully unit-tested offline (`tests/test_odds.py`). The one piece
 needs live data from both sides is `ticker_map` — matching a Kalshi ticker to the right
 game/outcome — which is kept explicit rather than guessed.
 
+### The weather edge (forecast -> fair probability)
+
+Kalshi lists a daily **high-temperature** market for several US cities (`KXHIGHNY` for
+New York, `KXHIGHLAX`, `KXHIGHCHI`, `KXHIGHMIA`, …). Each day's event is split into 2°F
+brackets — "88° to 89°", "90° or above" — and each bracket is a Yes/No contract. The
+alpha, exactly as with sports, is a **better probability than the market's**, and here
+it comes from a free forecast: `src/kalshi/sources/weather.py` reads the day's forecast
+high from the [National Weather Service API](https://api.weather.gov) (no key, no cost),
+models the high as a normal distribution around it, and reads each bracket's probability
+straight off that distribution.
+
+```bash
+# prove the whole loop offline — synthetic markets + forecast, no account, no network:
+python scripts/kalshi_weather_bot.py --self-test --bankroll 100
+
+# dry run against live DEMO markets (logs orders it WOULD place, sends nothing):
+python scripts/kalshi_weather_bot.py --bankroll 100
+
+# once you trust the output, place real DEMO orders (fake money):
+python scripts/kalshi_weather_bot.py --bankroll 100 --live
+```
+
+`--bankroll` caps the money the quarter-Kelly sizer stakes against, independent of the
+demo balance. The forecast math is fully unit-tested offline (`tests/test_weather.py`).
+
+The load-bearing assumption is `sigma_for_lead` — how uncertain the forecast is (≈3 °F
+same-day, widening with lead time). It is kept explicit and conservative for the same
+reason the sports `ticker_map` is: an over-tight sigma manufactures phantom edges. Read
+that number as skeptically as you read the calibration table.
+
 ## Next steps we can build
 
 - **Kalshi:** build the `ticker_map` (Kalshi market <-> sportsbook game) for a live slate.
-- **Kalshi:** a demo paper-trading loop that reads live markets and places sandbox orders.
+- **Kalshi:** collect resolved high-temp history to backtest and *calibrate* the weather
+  edge — verify the forecast-implied sigma against realized error before trading real money.
 - **Kalshi:** collect resolved-market history to backtest the sports edge on real data.
 - **Crypto:** more strategies (mean reversion, breakout, DCA/grid) behind the `Strategy` API.
 - Telegram/Discord alerting and hard per-day loss limits shared across both tracks.
