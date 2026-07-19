@@ -1,8 +1,12 @@
 ; =========================================================================
 ; Kalshi BTC/ETH inverse-pair paper trader (AutoHotkey v1)
 ;
-; Requires external helpers from the full local script (not defined here):
-;   Log, LogStream, HttpGet, GetKalshiPrice, RunCMD
+; Self-contained: run this file directly with AutoHotkey v1.1 (not v2).
+; It opens a status window, appends a running log to paper_log.txt, and
+; writes per-trade research data to paper_trades.csv (both next to this
+; script). Paper mode only - it never places real orders. Spot prices for
+; the behavior/strike gates come from Coinbase's public candle API, which
+; tracks Kalshi's CF Benchmarks index closely enough for bps-level moves.
 ;
 ; EV-focused revisions over the original:
 ;   - Strike-gap entry gate: refuses entries whose cheap sum is explained by
@@ -15,6 +19,10 @@
 ;   - Per-trade CSV research log (paper_trades.csv) for edge verification.
 ;   - Optional take-profit exit (PairTakeProfit, off by default).
 ; =========================================================================
+
+#NoEnv
+#SingleInstance Force
+SetBatchLines, -1
 
 ; =========================
 ;  PAPER TRADING Strategy Configuration
@@ -50,6 +58,7 @@ paperLossExitFloor := 0.05 ; if PairExit is 0 or lower, use this paper-only loss
 entryDiff := 0.00            ; legacy BUY offset; pair entry uses entryOrderPrice above.
 kalshiApiBase := "https://api.elections.kalshi.com"
 tradeCsvFile := A_ScriptDir "\paper_trades.csv" ; per-trade research log; set to "" to disable
+logFilePath := A_ScriptDir "\paper_log.txt"     ; running log; set to "" to disable
 assetSeriesMap := { "BTC": "KXBTC15M", "ETH": "KXETH15M", "SOL": "KXSOL15M", "XRP": "KXXRP15M", "DOGE": "KXDOGE15M", "HYPE": "KXHYPE15M", "BNB": "KXBNB15M" }
 
 ; Track the locked pair after entry. Individual legs are also mirrored in positions.
@@ -353,6 +362,92 @@ loop {
     Random, pollJitterMs, 0, 250
     sleepMs := pollIntervalMs + pollJitterMs
     Sleep %sleepMs%
+}
+
+MainGuiClose:
+MainGuiEscape:
+ExitApp
+
+EnsureLogUi() {
+    global logUiReady
+    if (logUiReady)
+        return
+    logUiReady := true
+    Gui, Main:New, +AlwaysOnTop, Kalshi Pair Paper Bot
+    Gui, Main:Font, s9, Consolas
+    Gui, Main:Add, Text, vStreamText w900, starting...
+    Gui, Main:Add, Edit, vLogText w900 r26 ReadOnly -Wrap +HScroll
+    Gui, Main:Show,, Kalshi Pair Paper Bot
+}
+
+Log(msg) {
+    global logFilePath
+    EnsureLogUi()
+    FormatTime, stamp,, yyyy-MM-dd HH:mm:ss
+    line := stamp "  " msg
+    if (logFilePath != "")
+        FileAppend, % line "`r`n", % logFilePath
+    ; newest lines are shown at the top so no scrolling is needed
+    GuiControlGet, cur, Main:, LogText
+    combined := (cur = "") ? line : line "`r`n" cur
+    if (StrLen(combined) > 20000)
+        combined := SubStr(combined, 1, 15000)
+    GuiControl, Main:, LogText, % combined
+}
+
+LogStream(key, value) {
+    global streamVals, streamOrder
+    EnsureLogUi()
+    if !IsObject(streamVals) {
+        streamVals := {}
+        streamOrder := []
+    }
+    if !streamVals.HasKey(key)
+        streamOrder.Push(key)
+    streamVals[key] := value
+    line := ""
+    for _, k in streamOrder {
+        if (line != "")
+            line .= "   |   "
+        line .= k ": " streamVals[k]
+    }
+    GuiControl, Main:, StreamText, % line
+}
+
+HttpGet(url, timeoutMs := 8000) {
+    try {
+        req := ComObjCreate("WinHttp.WinHttpRequest.5.1")
+        req.Open("GET", url, false)
+        req.SetRequestHeader("User-Agent", "kalshi-pair-paper-bot/1.0")
+        req.SetTimeouts(timeoutMs, timeoutMs, timeoutMs, timeoutMs)
+        req.Send()
+        if (req.Status = 200)
+            return req.ResponseText
+    } catch e {
+    }
+    return ""
+}
+
+GetKalshiPrice(asset) {
+    ; Coinbase public 15-minute candles; windows align to the same clock
+    ; quarters as Kalshi's 15m markets. Newest candle comes first:
+    ; [ time, low, high, open, close, volume ]
+    body := HttpGet("https://api.exchange.coinbase.com/products/" asset "-USD/candles?granularity=900&_=" A_TickCount)
+    if (body = "")
+        return ""
+    if !RegExMatch(body, "\[\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)", m)
+        return ""
+    obj := {}
+    obj.price := m5 + 0
+    obj.open15m := m4 + 0
+    if (obj.price <= 0)
+        return ""
+    return obj
+}
+
+RunCMD(command, workingDir := "") {
+    ; Shell fallback unused in this standalone build; A_NowUTC always works.
+    return ""
 }
 
 LogOnce(asset, reason, msg) {
