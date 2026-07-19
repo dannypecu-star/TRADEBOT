@@ -13,6 +13,7 @@ data/cache/*.json
 # Paper-trading outputs -- local research data, never committed
 data/mlb_paper_state.json
 data/mlb_paper_trades.csv
+data/arb_opportunities.csv
 
 # Python
 __pycache__/
