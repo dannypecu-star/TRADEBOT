@@ -116,6 +116,20 @@ class MarketFeed:
             return None
         up, _ = implied_ask_and_size(book, "yes")     # 1 - best NO bid
         down, _ = implied_ask_and_size(book, "no")    # 1 - best YES bid
+
+        def quoted_ask(field):
+            v = market.get(field)
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                return None
+            return v / 100.0 if 1 <= v <= 99 else None
+
+        # fall back to the market's quoted asks when the book is momentarily empty
+        if up is None:
+            up = quoted_ask("yes_ask")
+        if down is None:
+            down = quoted_ask("no_ask")
         if up is None and down is None:
             return None
         return {"asset": asset, "ticker": ticker, "up": up, "down": down,

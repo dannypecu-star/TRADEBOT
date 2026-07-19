@@ -70,6 +70,17 @@ def log(msg: str) -> None:
     print(f"{now_utc()}  {msg}", flush=True)
 
 
+_last_note: dict[str, float] = {}
+
+
+def note(key: str, msg: str, every: float = 60.0) -> None:
+    """Log a recurring condition at most once per ``every`` seconds."""
+    now = time.monotonic()
+    if now - _last_note.get(key, 0.0) >= every:
+        _last_note[key] = now
+        log(msg)
+
+
 def http_json(url: str, params: dict | None = None):
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -192,16 +203,18 @@ class Feeds:
                     self.market_cache[asset] = market = markets[0]
                     self.market_at[asset] = now
             except Exception as exc:  # noqa: BLE001
-                log(f"{asset} market discovery failed: {exc}")
+                note(f"{asset}_disc", f"{asset} market discovery failed: {exc}")
         if not market:
+            note(f"{asset}_nomkt",
+                 f"{asset}: no open market returned for {SERIES[asset]}")
             return None
         ticker = market.get("ticker") or ""
         try:
             book = http_json(f"{KALSHI_BASE}/markets/{ticker}/orderbook",
                              {"depth": 1}).get("orderbook") or {}
         except Exception as exc:  # noqa: BLE001
-            log(f"{asset} orderbook failed: {exc}")
-            return None
+            note(f"{asset}_book", f"{asset} orderbook failed: {exc}")
+            book = {}
         # an ask on one side is the best resting bid on the other, complemented
         def implied_ask(opposite_side):
             levels = book.get(opposite_side) or []
@@ -210,8 +223,25 @@ class Feeds:
             price_cents = int(levels[-1][0])
             return (100 - price_cents) / 100.0 if 1 <= price_cents <= 99 else None
 
-        up, down = implied_ask("no"), implied_ask("yes")
+        def quoted_ask(field):
+            v = market.get(field)
+            try:
+                v = int(v)
+            except (TypeError, ValueError):
+                return None
+            return v / 100.0 if 1 <= v <= 99 else None
+
+        # prefer live book-implied asks; fall back to the market's quoted asks
+        # (mirrors the AHK version, which returns quoted asks when the book is thin)
+        up = implied_ask("no")
+        down = implied_ask("yes")
+        if up is None:
+            up = quoted_ask("yes_ask")
+        if down is None:
+            down = quoted_ask("no_ask")
         if up is None and down is None:
+            note(f"{asset}_empty",
+                 f"{asset} {ticker}: empty orderbook and no quoted asks")
             return None
         return {"ticker": ticker, "up": up, "down": down,
                 "close_time": market.get("close_time") or ""}
@@ -372,7 +402,7 @@ def main() -> None:
         btc = feeds.kalshi_snapshot("BTC")
         eth = feeds.kalshi_snapshot("ETH")
         if not btc or not eth:
-            log_once("NO_DATA", "waiting for BTC/ETH market data...")
+            note("no_data", "waiting for BTC/ETH market data...")
             continue
 
         key = f"{btc['ticker']}|{eth['ticker']}"
