@@ -369,7 +369,7 @@ MainGuiEscape:
 ExitApp
 
 EnsureLogUi() {
-    global logUiReady
+    global logUiReady, StreamText, LogText
     if (logUiReady)
         return
     logUiReady := true
