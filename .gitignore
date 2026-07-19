@@ -29,3 +29,9 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+# Standalone paper-bot outputs (written next to the scripts)
+scripts/pair_paper_state.json
+scripts/pair_paper_trades.csv
+scripts/weather_paper_state.json
+scripts/weather_paper_trades.csv
