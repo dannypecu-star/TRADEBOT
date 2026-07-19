@@ -14,6 +14,8 @@ data/cache/*.json
 data/mlb_paper_state.json
 data/mlb_paper_trades.csv
 data/arb_opportunities.csv
+data/pair_paper_state.json
+data/pair_paper_trades.csv
 
 # Python
 __pycache__/
