@@ -35,3 +35,4 @@ scripts/pair_paper_state.json
 scripts/pair_paper_trades.csv
 scripts/weather_paper_state.json
 scripts/weather_paper_trades.csv
+scripts/arb_opportunities.csv
