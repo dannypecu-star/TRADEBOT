@@ -8,6 +8,11 @@ kalshi_*.pem
 # Cached market data
 data/cache/*.parquet
 data/cache/*.csv
+data/cache/*.json
+
+# Paper-trading outputs -- local research data, never committed
+data/mlb_paper_state.json
+data/mlb_paper_trades.csv
 
 # Python
 __pycache__/
