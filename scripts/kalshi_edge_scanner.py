@@ -12,16 +12,22 @@ Only prints an ACTIONABLE alert when net edge >= EDGE_THRESHOLD after:
   - a model-uncertainty haircut
   - a minimum book-depth requirement
 
-Weather fair values use an ensemble of two independent forecast sources:
+Weather fair values use an ensemble of independent forecast sources:
   - NWS point forecast for the settlement station (api.weather.gov)
-  - Open-Meteo daily forecast (api.open-meteo.com, free, no key)
-When both agree the blended mean is used as-is; when they disagree the
-disagreement widens sigma, so the model claims less edge exactly when the
-sources are least sure.
+  - Open-Meteo (api.open-meteo.com, free, no key): ECMWF, GFS and ICON
+    global models fetched in a single call
+The ensemble mean is the estimate; disagreement between members widens sigma,
+so the model claims less edge exactly when the sources are least sure. For
+same-day markets the observed running max temperature puts a hard floor under
+the outcome (the day's high can only go up), which sharpens fair values on the
+most liquid contracts.
 
 Usage:
     pip install requests
     python scripts/kalshi_edge_scanner.py
+
+Importable: scan() returns (alerts, notes); each alert carries a raw dict
+(ticker/action/ask/fair/net/size) that scripts/kalshi_paper_bot.py trades on.
 
 No API key needed -- read-only public endpoints only. This script never
 places orders. Nothing here is financial advice; verify everything on
@@ -31,7 +37,7 @@ kalshi.com before trading.
 import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -43,6 +49,9 @@ from requests.adapters import HTTPAdapter, Retry
 KALSHI_API = "https://api.elections.kalshi.com/trade-api/v2"  # serves ALL markets
 NWS_API = "https://api.weather.gov"
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
+
+# Independent global models pulled from Open-Meteo in one call.
+OPEN_METEO_MODELS = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless"]
 
 EDGE_THRESHOLD = 0.10       # 10 percentage points, net of everything below
 UNCERTAINTY_HAIRCUT = 0.03  # subtract 3pp from every raw edge (model doubt)
@@ -84,7 +93,7 @@ TIMEOUT = 20
 def make_session() -> requests.Session:
     """Pooled session with retries -- one TLS handshake per host, not per call."""
     s = requests.Session()
-    s.headers["User-Agent"] = "kalshi-edge-scanner/2.0 (personal research)"
+    s.headers["User-Agent"] = "kalshi-edge-scanner/3.0 (personal research)"
     retry = Retry(total=3, backoff_factor=0.5,
                   status_forcelist=(429, 500, 502, 503, 504),
                   allowed_methods=("GET",))
@@ -161,7 +170,7 @@ def group_by_event(markets):
 
 
 # ----------------------------------------------------------------------------
-# BENCHMARK 1: FORECAST ENSEMBLE (NWS + OPEN-METEO) vs WEATHER MARKETS
+# BENCHMARK 1: FORECAST ENSEMBLE (NWS + OPEN-METEO MODELS) vs WEATHER MARKETS
 # ----------------------------------------------------------------------------
 
 def nws_daily_highs(lat, lon):
@@ -177,8 +186,8 @@ def nws_daily_highs(lat, lon):
 
 
 def openmeteo_daily_highs(lat, lon):
-    """{date: forecast high degF} from Open-Meteo, up to 16 days out.
-    Single call per city, already in Fahrenheit."""
+    """{date: {model: forecast high degF}} from Open-Meteo, up to 16 days out.
+    All requested models come back in a single call, already in Fahrenheit."""
     data = get_json(OPEN_METEO_API, {
         "latitude": lat,
         "longitude": lon,
@@ -186,24 +195,55 @@ def openmeteo_daily_highs(lat, lon):
         "temperature_unit": "fahrenheit",
         "timezone": "auto",
         "forecast_days": 16,
+        "models": ",".join(OPEN_METEO_MODELS),
     })
     daily = data.get("daily", {})
-    return {d: t for d, t in zip(daily.get("time", []),
-                                 daily.get("temperature_2m_max", []))
-            if t is not None}
+    dates = daily.get("time", [])
+    highs = {}
+    for model in OPEN_METEO_MODELS:
+        for d, t in zip(dates, daily.get(f"temperature_2m_max_{model}", [])):
+            if t is not None:
+                highs.setdefault(d, {})[model] = t
+    if not highs:  # single-model responses come back unsuffixed
+        for d, t in zip(dates, daily.get("temperature_2m_max", [])):
+            if t is not None:
+                highs.setdefault(d, {})["open-meteo"] = t
+    return highs
+
+
+def openmeteo_observed_max(lat, lon):
+    """(station-local date, max temp degF observed so far today) or (date, None).
+    The day's high can only go up, so this floors same-day fair values."""
+    data = get_json(OPEN_METEO_API, {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m",
+        "temperature_unit": "fahrenheit",
+        "timezone": "auto",
+        "forecast_days": 1,
+    })
+    offset = data.get("utc_offset_seconds", 0)
+    now_local = datetime.now(timezone.utc) + timedelta(seconds=offset)
+    today = f"{now_local:%Y-%m-%d}"
+    cutoff = f"{now_local:%Y-%m-%dT%H:%M}"
+    hourly = data.get("hourly", {})
+    temps = [t for ts, t in zip(hourly.get("time", []),
+                                hourly.get("temperature_2m", []))
+             if t is not None and ts[:10] == today and ts <= cutoff]
+    return today, (max(temps) if temps else None)
 
 
 def fetch_forecasts(notes):
-    """Fetch both forecast sources for every city in parallel.
-    Returns {series: {"nws": {date: high}, "om": {date: high}}}."""
-    out = {s: {"nws": {}, "om": {}} for s in WEATHER_SERIES}
+    """Fetch every forecast source for every city in parallel.
+    Returns {series: {"nws": {date: high}, "om": {date: {model: high}},
+                      "obs": (local_today, max_so_far_or_None)}}."""
+    out = {s: {"nws": {}, "om": {}, "obs": (None, None)} for s in WEATHER_SERIES}
+    jobs = {"nws": nws_daily_highs, "om": openmeteo_daily_highs,
+            "obs": openmeteo_observed_max}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {}
-        for series, info in WEATHER_SERIES.items():
-            futures[(series, "nws")] = pool.submit(nws_daily_highs,
-                                                   info["lat"], info["lon"])
-            futures[(series, "om")] = pool.submit(openmeteo_daily_highs,
-                                                  info["lat"], info["lon"])
+        futures = {(s, name): pool.submit(fn, info["lat"], info["lon"])
+                   for s, info in WEATHER_SERIES.items()
+                   for name, fn in jobs.items()}
         for (series, source), fut in futures.items():
             try:
                 out[series][source] = fut.result()
@@ -213,23 +253,22 @@ def fetch_forecasts(notes):
 
 
 def blended_forecast(fc, date):
-    """Combine NWS + Open-Meteo highs for one date.
-    Returns (mu, extra_var, sources) or None if neither source has the date.
-    extra_var widens sigma when the two sources disagree."""
-    vals, sources = [], []
+    """Combine NWS + Open-Meteo model highs for one date.
+    Returns (mu, extra_var, sources) or None if no member has the date.
+    extra_var is the ensemble variance -- sigma widens when members disagree."""
+    members = []
     nws = fc["nws"].get(date)
-    om = fc["om"].get(date)
     if nws is not None:
-        vals.append(nws)
-        sources.append(f"NWS {nws:.0f}F")
-    if om is not None:
-        vals.append(om)
-        sources.append(f"Open-Meteo {om:.0f}F")
-    if not vals:
+        members.append(("NWS", nws))
+    for model, t in sorted(fc["om"].get(date, {}).items()):
+        members.append((model.split("_")[0].upper(), t))
+    if not members:
         return None
+    vals = [t for _, t in members]
     mu = sum(vals) / len(vals)
-    # Half the spread between sources, squared: treated as extra variance.
-    extra_var = ((max(vals) - min(vals)) / 2) ** 2 if len(vals) > 1 else 0.0
+    extra_var = (sum((v - mu) ** 2 for v in vals) / len(vals)
+                 if len(vals) > 1 else 0.0)
+    sources = [f"{name} {t:.0f}F" for name, t in members]
     return mu, extra_var, sources
 
 
@@ -248,18 +287,29 @@ def event_date_from_ticker(event_ticker):
         return None
 
 
-def fair_prob_for_strike(m, mu, sigma):
-    """P(market resolves YES) given forecast high ~ Normal(mu, sigma).
-    Uses 0.5 continuity correction since NWS reports whole degrees."""
+def fair_prob_for_strike(m, mu, sigma, obs_max=None):
+    """P(market resolves YES) given final high H ~ Normal(mu, sigma), optionally
+    truncated below at obs_max (today's running max can only go up).
+    Uses 0.5 continuity correction since settlement is in whole degrees."""
+    def p_above(t):
+        if obs_max is not None:
+            if t <= obs_max:
+                return 1.0
+            mass_above_obs = 1 - normal_cdf(obs_max, mu, sigma)
+            if mass_above_obs < 1e-9:  # forecast fully below obs: high = obs
+                return 0.0
+            return (1 - normal_cdf(t, mu, sigma)) / mass_above_obs
+        return 1 - normal_cdf(t, mu, sigma)
+
     st = m.get("strike_type")
     if st == "greater":      # yes if high > floor_strike
-        return 1 - normal_cdf(float(m["floor_strike"]) + 0.5, mu, sigma)
+        return p_above(float(m["floor_strike"]) + 0.5)
     if st == "less":         # yes if high < cap_strike
-        return normal_cdf(float(m["cap_strike"]) - 0.5, mu, sigma)
+        return 1 - p_above(float(m["cap_strike"]) - 0.5)
     if st == "between":
         lo = float(m["floor_strike"]) - 0.5
         hi = float(m["cap_strike"]) + 0.5
-        return normal_cdf(hi, mu, sigma) - normal_cdf(lo, mu, sigma)
+        return p_above(lo) - p_above(hi)
     return None
 
 
@@ -273,6 +323,7 @@ def scan_weather(alerts, notes):
             continue
         info = WEATHER_SERIES[series]
         fc = forecasts[series]
+        local_today, obs_so_far = fc["obs"]
 
         for event, legs in group_by_event(markets).items():
             date = event_date_from_ticker(event)
@@ -283,6 +334,7 @@ def scan_weather(alerts, notes):
                 notes.append(f"[skip] {event}: no forecast for {date}")
                 continue
             mu, extra_var, sources = blend
+            obs = obs_so_far if date == local_today else None
 
             close = legs[0].get("close_time", "")
             try:
@@ -290,24 +342,28 @@ def scan_weather(alerts, notes):
                 hrs = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
             except Exception:
                 hrs = 24
-            # Base verification error, widened by source disagreement.
+            # Base verification error, widened by ensemble disagreement.
             sigma = math.sqrt(forecast_sigma(max(hrs, 0)) ** 2 + extra_var)
             haircut = UNCERTAINTY_HAIRCUT + (
                 SINGLE_SOURCE_HAIRCUT if len(sources) < 2 else 0.0)
 
+            benchmark = (f"blend {mu:.0f}F [{', '.join(sources)}] "
+                         f"sigma {sigma:.1f}")
+            if obs is not None:
+                benchmark += f", obs so far {obs:.0f}F"
+
             for m in legs:
-                fair = fair_prob_for_strike(m, mu, sigma)
+                fair = fair_prob_for_strike(m, mu, sigma, obs_max=obs)
                 if fair is None:
                     continue
                 evaluate(m, fair, alerts, haircut=haircut,
-                         benchmark=f"blend {mu:.0f}F [{', '.join(sources)}] "
-                                   f"sigma {sigma:.1f}",
+                         benchmark=benchmark,
                          settlement="NWS Climatological Report (Daily) for the "
                                     f"official station -- {info['city']}. NOT app "
                                     "weather; station readings can differ 1-3F.",
                          why="Retail flow anchors on phone-app forecasts or "
-                             "yesterday's temps; an NWS + Open-Meteo ensemble at "
-                             "the settlement station is the better estimator.")
+                             "yesterday's temps; a multi-model ensemble at the "
+                             "settlement station is the better estimator.")
 
 
 # ----------------------------------------------------------------------------
@@ -320,21 +376,23 @@ def scan_consistency(alerts, notes, series_list):
         for event, legs in group_by_event(markets).items():
             if len(legs) < 3:
                 continue
-            # Cost to buy YES on every leg (exactly one should pay $1).
-            yes_cost = no_gain = 0.0
-            ok = True
+            rows = []  # (ticker, yes_ask, no_ask, yes_size, no_size)
             for m in legs:
                 ya, na, ysz, nsz = market_prices(m)
-                if ya <= 0 or na <= 0 or ysz < MIN_BOOK_DEPTH:
-                    ok = False
+                if ya <= 0 or na <= 0:
+                    rows = []
                     break
-                yes_cost += ya + taker_fee(ya)
-                no_gain += (1 - na) - taker_fee(na)
-            if not ok:
+                rows.append((m["ticker"], ya, na, ysz, nsz))
+            if not rows:
                 continue
-            n = len(legs)
-            # Arb 1: buy YES on all legs for < $1 -> guaranteed profit.
-            if yes_cost < 1 - EDGE_THRESHOLD:
+            n = len(rows)
+            yes_cost = sum(ya + taker_fee(ya) for _, ya, _, _, _ in rows)
+            no_gain = sum((1 - na) - taker_fee(na) for _, _, na, _, _ in rows)
+
+            # Arb 1: buy YES on all legs for < $1 -> guaranteed profit
+            # (exactly one leg pays $1). Needs YES depth on every leg.
+            if (yes_cost < 1 - EDGE_THRESHOLD
+                    and all(ysz >= MIN_BOOK_DEPTH for _, _, _, ysz, _ in rows)):
                 alerts.append({
                     "ticker": event, "kind": "INTERNAL ARB (buy all YES)",
                     "price": f"total cost ${f(yes_cost)} incl. fees across {n} legs",
@@ -346,9 +404,16 @@ def scan_consistency(alerts, notes, series_list):
                     "why": "Thin books drift apart; MM quotes lag on some legs.",
                     "risk": "Legs may move before you fill all of them; partial "
                             "fill leaves you directional.",
+                    "raw": {"action": "arb_yes", "event": event,
+                            "net": 1 - yes_cost,
+                            "legs": [{"ticker": t, "action": "buy_yes",
+                                      "ask": ya, "size": ysz}
+                                     for t, ya, _, ysz, _ in rows]},
                 })
             # Arb 2: buy NO on all legs -- collects $1*(n-1) if exhaustive.
-            if no_gain > (n - 1) + EDGE_THRESHOLD:
+            # Needs NO depth on every leg.
+            if (no_gain > (n - 1) + EDGE_THRESHOLD
+                    and all(nsz >= MIN_BOOK_DEPTH for _, _, _, _, nsz in rows)):
                 alerts.append({
                     "ticker": event, "kind": "INTERNAL ARB (buy all NO)",
                     "price": f"net credit ${f(no_gain)} vs ${n-1} owed across {n} legs",
@@ -357,6 +422,11 @@ def scan_consistency(alerts, notes, series_list):
                     "settlement": "Same event, same source across legs.",
                     "why": "Overpriced YES tails inflate NO value in aggregate.",
                     "risk": "Fill risk across many legs; capital tied to expiry.",
+                    "raw": {"action": "arb_no", "event": event,
+                            "net": no_gain - (n - 1),
+                            "legs": [{"ticker": t, "action": "buy_no",
+                                      "ask": na, "size": nsz}
+                                     for t, _, na, _, nsz in rows]},
                 })
 
 
@@ -369,20 +439,20 @@ def evaluate(m, fair, alerts, benchmark, settlement, why,
     ya, na, ysz, nsz = market_prices(m)
 
     # Both sides priced identically: buy SIDE at ask, profit if fair > cost.
-    for side, ask, size, fair_side in (("BUY YES", ya, ysz, fair),
-                                       ("BUY NO", na, nsz, 1 - fair)):
+    for action, ask, size, fair_side in (("buy_yes", ya, ysz, fair),
+                                         ("buy_no", na, nsz, 1 - fair)):
         if not (MIN_PRICE <= ask <= MAX_PRICE and size >= MIN_BOOK_DEPTH):
             continue
         net = fair_side - ask - taker_fee(ask) - haircut
         if net >= EDGE_THRESHOLD:
-            add_alert(alerts, m, side, ask, fair_side, net, size,
+            add_alert(alerts, m, action, ask, fair_side, net, size,
                       benchmark, settlement, why, haircut)
 
 
-def add_alert(alerts, m, side, price, fair, net, size,
+def add_alert(alerts, m, action, price, fair, net, size,
               benchmark, settlement, why, haircut):
     alerts.append({
-        "ticker": m["ticker"], "kind": side,
+        "ticker": m["ticker"], "kind": action.replace("buy_", "BUY ").upper(),
         "title": m.get("title", ""),
         "price": f"{price*100:.0f}c ask ({size:.0f} contracts showing)",
         "fair": f"{fair*100:.0f}% est. ({benchmark})",
@@ -391,24 +461,34 @@ def add_alert(alerts, m, side, price, fair, net, size,
         "settlement": settlement, "why": why,
         "risk": "Displayed size may be one quote layer; forecast can shift; "
                 "re-check the book immediately before ordering.",
+        "raw": {"action": action, "ticker": m["ticker"],
+                "event": m.get("event_ticker", ""),
+                "ask": price, "fair": fair, "net": net, "size": size},
     })
 
 
 # ----------------------------------------------------------------------------
-# MAIN
+# SCAN (importable) + MAIN
 # ----------------------------------------------------------------------------
 
-def main():
+def scan(verbose=False):
+    """Run the full scan. Returns (alerts, notes)."""
     alerts, notes = [], []
+    if verbose:
+        print("Scanning weather markets vs NWS + Open-Meteo model ensemble...")
+    scan_weather(alerts, notes)
+    if verbose:
+        print("Scanning internal consistency (Fed / CPI event legs)...")
+    scan_consistency(alerts, notes, CONSISTENCY_SERIES)
+    return alerts, notes
+
+
+def main():
     print(f"Kalshi Edge Scanner -- {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC")
     print(f"Threshold: {EDGE_THRESHOLD*100:.0f}pp net edge | haircut "
           f"{UNCERTAINTY_HAIRCUT*100:.0f}pp | min depth {MIN_BOOK_DEPTH}\n")
 
-    print("Scanning weather markets vs NWS + Open-Meteo ensemble...")
-    scan_weather(alerts, notes)
-
-    print("Scanning internal consistency (Fed / CPI event legs)...")
-    scan_consistency(alerts, notes, CONSISTENCY_SERIES)
+    alerts, notes = scan(verbose=True)
 
     print()
     if not alerts:

@@ -182,6 +182,36 @@ unit-tested offline against a fake client (`tests/test_trader.py`).
 > environment. The signing logic is unit-tested offline, so the client is correct;
 > it just needs a network that can reach Kalshi.
 
+### The weather edge (forecast ensemble -> fair probability), no API key
+
+A second, fully keyless alpha source lives in `scripts/`:
+
+```bash
+python scripts/kalshi_edge_scanner.py        # one-shot scan, prints actionable edges
+python scripts/kalshi_paper_bot.py           # one paper-trading cycle (cron-friendly)
+python scripts/kalshi_paper_bot.py --loop 15 # automated: scan + paper-trade every 15 min
+python scripts/kalshi_paper_bot.py --report  # current paper book / P&L
+```
+
+The **scanner** prices Kalshi daily-high-temperature markets against a 4-member
+forecast ensemble — NWS point forecast plus ECMWF, GFS and ICON via
+[Open-Meteo](https://open-meteo.com) (free, no key) — and only alerts when the edge
+clears the taker fee, the real ask, a model-uncertainty haircut, and a book-depth
+floor. Disagreement between ensemble members widens the distribution, so it claims
+less edge exactly when the models are least sure. For same-day markets the observed
+running max (the high can only go up) truncates the distribution, which is where the
+sharpest mispricings show. It also flags internal arbs (event legs summing far from
+100%). Fetches are parallel and per-city, so a full scan is a few seconds.
+
+The **paper bot** turns those alerts into a simulated portfolio: fills at the real
+ask + real fee, quarter-Kelly sizing capped at 5% of equity per trade (15% per arb
+basket, 60% total exposure), no double-entry, settlement booked from Kalshi's public
+market results, and bankroll / trade log / equity curve persisted in `data/paper_bot/`
+so cron runs continue where the last one stopped. **Simulation only** — it never
+places an order and fills are optimistic (full displayed ask), so treat the P&L as an
+upper bound on the strategy, not proof. Fully unit-tested offline
+(`tests/test_edge_scanner_bot.py`).
+
 ### The sports edge (odds -> fair probability)
 
 The alpha source is built: `src/kalshi/odds.py` converts sportsbook odds to a devigged

@@ -9,6 +9,9 @@ kalshi_*.pem
 data/cache/*.parquet
 data/cache/*.csv
 
+# Paper-bot runtime state (bankroll, positions, logs)
+data/paper_bot/
+
 # Python
 __pycache__/
 *.pyc
