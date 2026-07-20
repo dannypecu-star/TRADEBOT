@@ -36,7 +36,16 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kalshi_edge_scanner import KALSHI_API, get_json, scan, taker_fee  # noqa: E402
+try:
+    from kalshi_edge_scanner import KALSHI_API, get_json, scan, taker_fee
+except ImportError:
+    sys.exit(
+        "Missing kalshi_edge_scanner.py -- this bot trades on that scanner's "
+        "output and needs it in the SAME folder as this script.\n"
+        "Fix: clone the full repo (git clone <repo> && cd TRADEBOT && "
+        "python scripts/kalshi_paper_bot.py), or download "
+        "kalshi_edge_scanner.py next to this file. Also: pip install requests"
+    )
 
 # ----------------------------------------------------------------------------
 # CONFIG
