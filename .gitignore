@@ -36,3 +36,5 @@ scripts/pair_paper_trades.csv
 scripts/weather_paper_state.json
 scripts/weather_paper_trades.csv
 scripts/arb_opportunities.csv
+scripts/convergence_paper_state.json
+scripts/convergence_paper_trades.csv
