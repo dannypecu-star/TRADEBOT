@@ -190,7 +190,8 @@ A second, fully keyless alpha source lives in `scripts/`:
 python scripts/kalshi_edge_scanner.py        # one-shot scan, prints actionable edges
 python scripts/kalshi_paper_bot.py           # one paper-trading cycle (cron-friendly)
 python scripts/kalshi_paper_bot.py --loop 15 # automated: scan + paper-trade every 15 min
-python scripts/kalshi_paper_bot.py --report  # current paper book / P&L
+python scripts/kalshi_paper_bot.py --report     # current paper book / P&L
+python scripts/kalshi_paper_bot.py --calibrate  # model predicted vs realized hit rate
 ```
 
 The **scanner** prices Kalshi daily-high-temperature markets against a 4-member
@@ -203,14 +204,25 @@ running max (the high can only go up) truncates the distribution, which is where
 sharpest mispricings show. It also flags internal arbs (event legs summing far from
 100%). Fetches are parallel and per-city, so a full scan is a few seconds.
 
-The **paper bot** turns those alerts into a simulated portfolio: fills at the real
-ask + real fee, quarter-Kelly sizing capped at 5% of equity per trade (15% per arb
-basket, 60% total exposure), no double-entry, settlement booked from Kalshi's public
-market results, and bankroll / trade log / equity curve persisted in `data/paper_bot/`
-so cron runs continue where the last one stopped. **Simulation only** — it never
-places an order and fills are optimistic (full displayed ask), so treat the P&L as an
-upper bound on the strategy, not proof. Fully unit-tested offline
-(`tests/test_edge_scanner_bot.py`).
+Thresholds were **recalibrated after a 3-day live paper run** in which the Gaussian
+tail model proved overconfident — it rated far-from-forecast strikes ~23% when they
+hit ~7%, and quarter-Kelly then bet biggest on exactly those wrong calls. The fixes:
+tighter `forecast_sigma`, a `MIN_PRICE` floor that drops sub-10¢ longshots, and a
+`MAX_EDGE_RATIO` "too good to be true" guard that skips any trade where the model
+claims more than ~2.25× the market's implied probability (large *relative*
+disagreement is the fingerprint of model error, not a gift).
+
+The **paper bot** turns surviving alerts into a simulated portfolio: fills at the
+real ask + real fee, **tenth-Kelly** sizing capped at 2% of equity *and* 250
+contracts per trade (8% per arb basket, 40% total exposure), a **10% daily-drawdown
+halt** that stops opening new trades after a bad 24h, no double-entry, settlement
+booked from Kalshi's public market results, and bankroll / trade log / equity curve
+persisted in `data/paper_bot/` so cron runs continue where the last one stopped. It
+logs each trade's model probability so `--calibrate` can bucket settled trades by
+predicted vs realized hit rate and tell you if the model is still overconfident.
+**Simulation only** — it never places an order and fills are optimistic (full
+displayed ask), so treat the P&L as an upper bound on the strategy, not proof. Fully
+unit-tested offline (`tests/test_edge_scanner_bot.py`).
 
 ### The sports edge (odds -> fair probability)
 

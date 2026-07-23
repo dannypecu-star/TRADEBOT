@@ -92,8 +92,40 @@ def test_evaluate_emits_raw_payload():
     assert len(alerts) == 1
     raw = alerts[0]["raw"]
     assert raw["action"] == "buy_yes" and raw["ask"] == 0.40
-    # net = 0.60 - 0.40 - fee(0.02) - haircut(0.03) = 0.15
-    assert raw["net"] == pytest.approx(0.15)
+    # net = 0.60 - 0.40 - fee(0.02) - haircut(0.05) = 0.13
+    assert raw["net"] == pytest.approx(0.13)
+    assert raw["fair"] == pytest.approx(0.60)
+
+
+def test_min_price_filters_longshots():
+    # A 5c longshot that the model loves is exactly the losing pattern -- and
+    # is now below MIN_PRICE, so it must not produce an alert.
+    m = {"ticker": "KXHIGHMIA-26JUL20-B88.5", "event_ticker": "KXHIGHMIA-26JUL20",
+         "strike_type": "greater", "floor_strike": 88,
+         "yes_ask_dollars": "0.05", "no_ask_dollars": "0.97",
+         "yes_ask_size_fp": "800", "no_ask_size_fp": "800"}
+    alerts = []
+    scanner.evaluate(m, 0.30, alerts, benchmark="b", settlement="s", why="w")
+    assert alerts == []
+
+
+def test_max_edge_ratio_rejects_too_good_to_be_true():
+    # Market says ~15c, model claims 45% -- a 3x relative gap. That is the
+    # overconfidence fingerprint from the live run and must be skipped, even
+    # though the ask clears MIN_PRICE and the raw net edge looks huge.
+    m = {"ticker": "KXHIGHCHI-26JUL20-B85.5", "event_ticker": "KXHIGHCHI-26JUL20",
+         "strike_type": "greater", "floor_strike": 85,
+         "yes_ask_dollars": "0.15", "no_ask_dollars": "0.88",
+         "yes_ask_size_fp": "200", "no_ask_size_fp": "200"}
+    alerts = []
+    scanner.evaluate(m, 0.45, alerts, benchmark="b", settlement="s", why="w")
+    assert all(a["raw"]["action"] != "buy_yes" for a in alerts)
+    # A believable central edge (market 40c, model 60%: net 0.13, ratio 1.5x)
+    # still passes both the ratio guard and the raised net-edge threshold.
+    m2 = dict(m, yes_ask_dollars="0.40", no_ask_dollars="0.62")
+    alerts2 = []
+    scanner.evaluate(m2, 0.60, alerts2, benchmark="b", settlement="s", why="w")
+    assert any(a["raw"]["action"] == "buy_yes" for a in alerts2)
 
 
 # ----------------------------------------------------------------------------
@@ -123,8 +155,11 @@ def test_cycle_opens_then_settles(paper_dir, monkeypatch, capsys):
     assert len(state["positions"]) == 1
     pos = next(iter(state["positions"].values()))
     cost = 0.40 + scanner.taker_fee(0.40)  # 0.42
-    # quarter-Kelly $77.5 -> capped at 5% of equity ($50) -> capped by book depth
-    assert pos["contracts"] == min(int((0.05 * 1000) // cost), 100)
+    # tenth-Kelly ~$31 -> capped at 2% of equity ($20) -> int($20 // $0.42)
+    assert pos["contracts"] == min(int((bot.MAX_TRADE_FRACTION * 1000) // cost),
+                                   100, bot.MAX_CONTRACTS_PER_TRADE)
+    assert pos["contracts"] == 47
+    assert pos["model_fair"] == pytest.approx(0.60)
     assert state["cash"] == pytest.approx(1000 - pos["cost_total"])
 
     # Second cycle: market settled YES and is no longer in the scan.
@@ -212,3 +247,41 @@ def test_tiny_edge_or_thin_book_skipped(paper_dir, monkeypatch):
     bot.run_cycle(state, verbose=False)
     assert not state["positions"]
     assert state["cash"] == pytest.approx(1000)
+
+
+def test_contract_cap_limits_cheap_position(paper_dir, monkeypatch):
+    # A deep, cheap book that Kelly would happily buy thousands of is clamped
+    # to MAX_CONTRACTS_PER_TRADE -- the 781-contract lottery ticket can't recur.
+    big = {"ticker": "KXHIGHMIA-26JUL22-B94.5", "kind": "BUY YES",
+           "raw": {"action": "buy_yes", "ticker": "KXHIGHMIA-26JUL22-B94.5",
+                   "event": "KXHIGHMIA-26JUL22", "ask": 0.10, "fair": 0.22,
+                   "net": 0.12, "size": 5000}}
+    monkeypatch.setattr(bot, "scan", lambda verbose=False: ([big], []))
+    monkeypatch.setattr(bot, "get_json", lambda url, params=None: {"markets": []})
+    state = bot.load_state()
+    bot.run_cycle(state, verbose=False)
+    pos = next(iter(state["positions"].values()))
+    assert pos["contracts"] <= bot.MAX_CONTRACTS_PER_TRADE
+
+
+def test_daily_drawdown_halt_blocks_new_trades(paper_dir, monkeypatch):
+    monkeypatch.setattr(bot, "scan", lambda verbose=False: ([_weather_alert()], []))
+    monkeypatch.setattr(bot, "get_json", lambda url, params=None: {"markets": []})
+    state = bot.load_state()
+    # Seed a 24h window whose peak is far above current equity -> halt condition.
+    state["equity_window"] = [[bot.now_iso(), 1000.0]]
+    state["cash"] = 800.0  # equity now 800 vs peak 1000 = -20% > 10% halt
+    bot.run_cycle(state, verbose=False)
+    assert state["positions"] == {}   # suppressed
+    assert state["cash"] == pytest.approx(800.0)
+
+
+def test_calibrate_reads_settlements(paper_dir, monkeypatch, capsys):
+    # Two settled trades the model rated 25%, both lost -> overconfident report.
+    monkeypatch.setattr(bot, "now_iso", lambda: "2026-07-20T00:00:00Z")
+    bot.log_trade("settle", "A", "yes", 10, 0.0, 0.0, -3.0, "result=no", fair=0.25)
+    bot.log_trade("settle", "B", "yes", 10, 1.0, 10.0, 7.0, "result=yes", fair=0.25)
+    bot.calibrate()
+    out = capsys.readouterr().out
+    assert "2 settled" in out
+    assert "OVERALL" in out

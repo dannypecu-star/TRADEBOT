@@ -53,11 +53,17 @@ OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 # Independent global models pulled from Open-Meteo in one call.
 OPEN_METEO_MODELS = ["ecmwf_ifs025", "gfs_seamless", "icon_seamless"]
 
-EDGE_THRESHOLD = 0.10       # 10 percentage points, net of everything below
-UNCERTAINTY_HAIRCUT = 0.03  # subtract 3pp from every raw edge (model doubt)
-SINGLE_SOURCE_HAIRCUT = 0.02  # extra doubt when only one forecast source responded
+EDGE_THRESHOLD = 0.12       # 12 percentage points, net of everything below
+UNCERTAINTY_HAIRCUT = 0.05  # subtract 5pp from every raw edge (model doubt)
+SINGLE_SOURCE_HAIRCUT = 0.03  # extra doubt when only one forecast source responded
 MIN_BOOK_DEPTH = 25         # contracts available at the ask to count as fillable
-MIN_PRICE, MAX_PRICE = 0.03, 0.97  # ignore near-settled extremes (fee/noise zone)
+MIN_PRICE, MAX_PRICE = 0.10, 0.90  # skip longshots/near-settled (calibration-driven)
+# "Too good to be true" guard. When the model's fair probability exceeds the
+# market's implied probability (the ask) by more than this multiple, treat the
+# gap as model error, not edge, and skip. Live settlements showed the model
+# assigning ~23% to strikes that hit ~7%; large *relative* disagreement is the
+# fingerprint of an overconfident tail model, not a real mispricing.
+MAX_EDGE_RATIO = 2.25
 MAX_WORKERS = 8             # parallel HTTP fetches (forecasts, market lists)
 
 # Weather series -> NWS station coordinates (must match Kalshi settlement station)
@@ -71,15 +77,18 @@ WEATHER_SERIES = {
 }
 
 # Forecast error (std dev, deg F) by hours until end of event day.
-# Rough NWS verification numbers; widen them and you'll flag less.
+# Tightened after 42 live settlements showed the model over-assigning
+# probability to strikes far from the forecast (implied ~23% vs realized ~7%).
+# A narrower distribution puts less mass in the tails, so fewer bogus longshot
+# "edges" clear the bar. Re-fit these with `kalshi_paper_bot.py --calibrate`.
 def forecast_sigma(hours_out: float) -> float:
     if hours_out <= 12:
-        return 1.7
+        return 1.4
     if hours_out <= 24:
-        return 2.2
+        return 1.8
     if hours_out <= 48:
-        return 3.0
-    return 4.0
+        return 2.5
+    return 3.3
 
 # Non-weather series to pull for internal-consistency checks (legs sum to 100%).
 CONSISTENCY_SERIES = ["KXFEDDECISION", "KXCPI", "KXCPIYOY", "KXFED"]
@@ -442,6 +451,11 @@ def evaluate(m, fair, alerts, benchmark, settlement, why,
     for action, ask, size, fair_side in (("buy_yes", ya, ysz, fair),
                                          ("buy_no", na, nsz, 1 - fair)):
         if not (MIN_PRICE <= ask <= MAX_PRICE and size >= MIN_BOOK_DEPTH):
+            continue
+        # Distrust extreme relative disagreement: if the model claims the true
+        # probability is many times the market's, that's far more likely to be
+        # model error than a gift. This is the single biggest loss filter.
+        if fair_side > ask * MAX_EDGE_RATIO:
             continue
         net = fair_side - ask - taker_fee(ask) - haircut
         if net >= EDGE_THRESHOLD:
