@@ -261,6 +261,31 @@ class Feeds:
             log(f"{asset} spot fetch failed: {exc}")
         return self.spot_cache.get(asset, (None, None))
 
+    def window_result(self, asset, close_time_iso):
+        """UP/DOWN result of the completed 15m window ending at close_time.
+
+        Settles from the completed Coinbase candle (close vs open; a dead-even
+        close settles DOWN). Returns None while the candle is not yet available.
+        Candle-based settlement replaces the old final-quote proxy, which could
+        score BOTH legs of a pair as winners off a stale last snapshot.
+        """
+        close_dt = parse_iso(close_time_iso)
+        if close_dt is None:
+            return None
+        window_start = int(close_dt.timestamp()) - 900
+        try:
+            candles = http_json(
+                f"https://api.exchange.coinbase.com/products/{COINBASE[asset]}/candles",
+                {"granularity": 900})
+        except Exception as exc:  # noqa: BLE001
+            note(f"{asset}_settle", f"{asset} settle fetch failed: {exc}")
+            return None
+        for row in candles:
+            if abs(int(row[0]) - window_start) <= 1:
+                open_px, close_px = float(row[3]), float(row[4])
+                return "UP" if close_px > open_px else "DOWN"
+        return None
+
 
 # =========================
 #  Paper ledger
@@ -297,15 +322,20 @@ class Ledger:
         self.open_trades.append(trade)
         return trade
 
-    def close_all(self, mode, current=None, final=None):
-        """EXIT sells at ``current`` {(asset, side): price}; RESOLUTION settles from
-        ``final`` {asset: (up, down)} -- ties settle DOWN, no settlement fee."""
+    def close_all(self, mode, current=None, final=None, results=None):
+        """EXIT sells at ``current`` {(asset, side): price}. RESOLUTION settles from
+        ``results`` {asset: "UP"/"DOWN"} (candle-based) when available, else from
+        ``final`` {asset: (up, down)} quotes -- ties settle DOWN, no settlement fee."""
         res = {"trades": 0, "contracts": 0, "cost": 0.0, "revenue": 0.0,
                "fees": 0.0, "pnl": 0.0, "outcome": ""}
         for trade in self.open_trades:
             revenue = exit_fees = 0.0
             for leg in trade["legs"]:
                 if mode == "RESOLUTION":
+                    result = (results or {}).get(leg["asset"])
+                    if result in ("UP", "DOWN"):
+                        revenue += (1.0 if result == leg["side"] else 0.0) * leg["qty"]
+                        continue
                     up, down = (final or {}).get(leg["asset"], (None, None))
                     if up is not None and down is not None:
                         won = (up > down) if leg["side"] == "UP" else (down >= up)
@@ -380,9 +410,12 @@ def main() -> None:
             return
         name = ledger.open_trades[0]["name"]
         btc, eth = last_snaps.get("BTC", {}), last_snaps.get("ETH", {})
+        results = {a: feeds.window_result(a, last_snaps.get(a, {}).get("close_time") or "")
+                   for a in ("BTC", "ETH")}
         res = ledger.close_all("RESOLUTION",
                                final={"BTC": (btc.get("up"), btc.get("down")),
-                                      "ETH": (eth.get("up"), eth.get("down"))})
+                                      "ETH": (eth.get("up"), eth.get("down"))},
+                               results=results)
         log(f"{name} held to resolution | {res['outcome']} "
             f"| revenue {res['revenue']:.2f} | fees {res['fees']:.2f} "
             f"| P/L {res['pnl']:+.2f} | bankroll {ledger.bankroll:.2f} "
