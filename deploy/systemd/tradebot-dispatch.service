@@ -1,0 +1,15 @@
+# One-shot service that computes the latest signal and dispatches it to a hosted platform
+# (3Commas / Cryptohopper / MT5). Paired with tradebot-dispatch.timer to run once per bar.
+# This is the deployment pattern for driving a hosted bot instead of trading locally.
+[Unit]
+Description=TRADEBOT signal dispatch (one run)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tradebot
+WorkingDirectory=/opt/tradebot
+EnvironmentFile=-/opt/tradebot/.env
+# Remove --live to keep it a dry run. Change --platform to your venue.
+ExecStart=/usr/bin/python3 scripts/dispatch_signal.py --platform 3commas --live

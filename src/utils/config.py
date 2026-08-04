@@ -1,4 +1,9 @@
-"""Load YAML config into the strongly-typed dataclasses the engine expects."""
+"""Load YAML config into the strongly-typed dataclasses the engine expects.
+
+Backward compatible with the original format where ``strategy:`` was a dict of
+trend-momentum parameters. The current format uses ``strategy:`` as a *name* selector and
+``strategy_params:`` as a shared parameter block for all strategies.
+"""
 from __future__ import annotations
 
 import os
@@ -14,9 +19,18 @@ def load_config(path: str) -> dict:
         raw = yaml.safe_load(fh) or {}
 
     data = raw.get("data", {})
-    strat = raw.get("strategy", {})
     risk = raw.get("risk", {})
     execu = raw.get("execution", {})
+
+    # Strategy selection: support both the new (name + strategy_params) and the legacy
+    # (strategy: {dict of trend_momentum params}) shapes.
+    strat_field = raw.get("strategy", "trend_following")
+    if isinstance(strat_field, dict):
+        strategy_name = "trend_momentum"
+        strategy_params = dict(strat_field)
+    else:
+        strategy_name = str(strat_field)
+        strategy_params = dict(raw.get("strategy_params", {}))
 
     return {
         "data": {
@@ -25,11 +39,14 @@ def load_config(path: str) -> dict:
             "exchange": data.get("exchange", "binance"),
             "limit": int(data.get("limit", 3000)),
         },
+        "strategy_name": strategy_name,
+        "strategy_params": strategy_params,
+        # Legacy alias: older code reads cfg["strategy"] as a trend_momentum kwargs dict.
         "strategy": {
-            "fast": int(strat.get("fast", 20)),
-            "slow": int(strat.get("slow", 50)),
-            "mom_lookback": int(strat.get("mom_lookback", 24)),
-            "atr_period": int(strat.get("atr_period", 14)),
+            "fast": int(strategy_params.get("fast", 20)),
+            "slow": int(strategy_params.get("slow", 50)),
+            "mom_lookback": int(strategy_params.get("mom_lookback", 24)),
+            "atr_period": int(strategy_params.get("atr_period", 14)),
         },
         "risk": RiskConfig(
             risk_per_trade=float(risk.get("risk_per_trade", 0.01)),
@@ -43,6 +60,8 @@ def load_config(path: str) -> dict:
             slippage=float(execu.get("slippage", 0.0005)),
             atr_period=int(execu.get("atr_period", 14)),
         ),
+        "arbitrage": raw.get("arbitrage", {}),
+        "monitoring": raw.get("monitoring", {}),
         "live": raw.get("live", {"enabled": False}),
     }
 

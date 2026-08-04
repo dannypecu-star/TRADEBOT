@@ -6,10 +6,27 @@ data:
   exchange: binance    # any ccxt exchange id; public data needs no key
   limit: 3000          # number of candles to pull
 
-strategy:
-  fast: 20             # fast EMA span
-  slow: 50             # slow EMA span
-  mom_lookback: 24     # momentum lookback in bars
+# Which strategy to run in backtests / paper trading / signal dispatch.
+#   trend_following | trend_momentum | mean_reversion
+strategy: trend_following
+
+# Parameters for every strategy live here in one flat block. Each strategy reads only
+# the keys it understands (see src/strategies/registry.py), so unrelated keys are ignored.
+strategy_params:
+  # --- trend_following (Donchian breakout)
+  entry_lookback: 55
+  exit_lookback: 20
+  # --- trend_momentum (EMA + momentum)
+  fast: 20
+  slow: 50
+  mom_lookback: 24
+  # --- mean_reversion (z-score / Bollinger)
+  lookback: 20
+  entry_z: 2.0
+  exit_z: 0.5
+  trend_filter: 200
+  use_trend_filter: true
+  # --- shared
   atr_period: 14
 
 risk:
@@ -22,6 +39,26 @@ execution:
   initial_cash: 10000
   fee_rate: 0.001      # 0.10% taker fee
   slippage: 0.0005     # 0.05% slippage per fill
+
+# Statistical (pairs) arbitrage: two co-moving symbols whose spread mean-reverts.
+arbitrage:
+  symbol_a: ETH/USDT
+  symbol_b: BTC/USDT
+  lookback: 120          # longer window -> more stable rolling hedge ratio (beta)
+  entry_z: 2.0
+  exit_z: 0.5
+  stop_z: 4.0
+  gross_leverage: 0.25   # notional per leg as a fraction of equity (one pair = modest size)
+  # Cross-exchange scanner: same symbol, many venues.
+  cross_exchange_symbol: BTC/USDT
+  exchanges: [binance, kraken, coinbase, bitstamp]
+
+# Monitoring: health + Prometheus metrics endpoint the paper/live bot exposes.
+monitoring:
+  health_host: 0.0.0.0
+  health_port: 8000
+  log_level: INFO
+  json_console: false        # true in containers so a log shipper can scrape stdout
 
 # LIVE TRADING IS OFF BY DEFAULT AND INTENTIONALLY HARD TO TURN ON.
 # Do not enable until you have (1) a green backtest, (2) walk-forward validation,

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.backtest.engine import run_backtest
 from src.data.loader import fetch_ohlcv, synthetic_ohlcv
 from src.risk.manager import RiskManager
-from src.strategies.trend_momentum import TrendMomentum
+from src.strategies.registry import available, build_strategy
 from src.utils.config import default_config_path, load_config
 
 
@@ -57,6 +57,8 @@ def main() -> None:
     parser.add_argument("--config", default=default_config_path())
     parser.add_argument("--synthetic", action="store_true",
                         help="use offline synthetic data instead of the exchange")
+    parser.add_argument("--strategy", default=None,
+                        help=f"override the config strategy; one of: {', '.join(available())}")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -69,7 +71,8 @@ def main() -> None:
         df = fetch_ohlcv(d["symbol"], d["timeframe"], d["exchange"], d["limit"])
         symbol = f"{d['symbol']} @ {d['exchange']}"
 
-    strategy = TrendMomentum(**cfg["strategy"])
+    strategy_name = args.strategy or cfg["strategy_name"]
+    strategy = build_strategy(strategy_name, cfg["strategy_params"])
     risk = RiskManager(cfg["risk"])
     result = run_backtest(df, strategy, risk, cfg["execution"])
 

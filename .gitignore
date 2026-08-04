@@ -9,6 +9,10 @@ kalshi_*.pem
 data/cache/*.parquet
 data/cache/*.csv
 
+# Runtime state & logs (paper/live bot)
+logs/
+data/paper_state.json
+
 # Python
 __pycache__/
 *.pyc

@@ -1,0 +1,57 @@
+# Full local/VPS stack: the bot + Prometheus (metrics) + Grafana (dashboards).
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# The bot exposes /metrics; Prometheus scrapes it; Grafana visualizes it. All three are
+# on an internal network; only Grafana's UI port is published for you to look at.
+services:
+  tradebot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: tradebot
+    restart: unless-stopped
+    # Secrets come from the environment / an .env file, never baked into the image.
+    env_file:
+      - ../.env            # optional; create from the keys documented in README
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Persist paper state, audit logs, and (optionally) your real config.yaml.
+      - tradebot_data:/app/data
+      - tradebot_logs:/app/logs
+      - ../config.yaml:/app/config.yaml:ro   # provide your own; falls back to example
+    ports:
+      - "8000:8000"        # health + metrics (remove to keep it internal-only)
+    command: ["python", "scripts/run_paper_trader.py", "live"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: tradebot_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - tradebot
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: tradebot_grafana
+    restart: unless-stopped
+    environment:
+      # Change this before exposing Grafana anywhere non-local.
+      - GF_SECURITY_ADMIN_PASSWORD=changeme
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"        # Grafana UI: http://localhost:3000 (admin / changeme)
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  tradebot_data:
+  tradebot_logs:
+  prometheus_data:
+  grafana_data:

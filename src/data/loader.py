@@ -116,6 +116,74 @@ def synthetic_ohlcv(
     )
 
 
+def _ohlc_from_close(
+    close: np.ndarray, rng: np.random.Generator, timeframe: str, wick_frac: float = 0.003
+) -> pd.DataFrame:
+    """Wrap a close-price path in plausible open/high/low/volume candles."""
+    n = len(close)
+    open_ = np.empty(n)
+    open_[0] = close[0]
+    open_[1:] = close[:-1]
+    wick = np.abs(rng.standard_normal(n)) * wick_frac * close
+    high = np.maximum(open_, close) + wick
+    low = np.minimum(open_, close) - wick
+    volume = rng.uniform(10, 100, n)
+    tf_ms = _TIMEFRAME_MS[timeframe]
+    end = pd.Timestamp.now("UTC").floor("h")
+    index = pd.date_range(end=end, periods=n, freq=pd.Timedelta(milliseconds=tf_ms))
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": volume},
+        index=index,
+    )
+
+
+def regime_ohlcv(
+    kind: str,
+    n: int = 3000,
+    timeframe: str = "1h",
+    start_price: float = 30_000.0,
+    seed: int | None = 42,
+) -> pd.DataFrame:
+    """Synthetic candles that deliberately CONTAIN the structure a strategy targets.
+
+    Pure geometric Brownian motion is a random walk with drift: it has no serial structure,
+    so by construction there is nothing for a trend or reversion rule to exploit and
+    buy-and-hold is optimal. That is the honest reason strategies do not beat B&H on GBM.
+
+    Real markets are not pure random walks -- they exhibit momentum (trends persist) and,
+    at other times, mean reversion (ranges). This generator produces those regimes so a
+    strategy can be shown to work *when its assumption holds*. It is idealized, not a claim
+    that real markets are this clean.
+
+    * ``kind="trend"``  -- a persistent-momentum path (AR(1) drift). Trend strategies should
+      profit here; mean reversion should not.
+    * ``kind="meanrevert"`` -- an Ornstein-Uhlenbeck path in log-price that oscillates around
+      a slowly drifting level. Mean reversion should profit; trend strategies should not.
+    """
+    rng = np.random.default_rng(seed)
+    if kind == "trend":
+        # AR(1) drift: today's drift is mostly yesterday's -> trends persist for a while,
+        # then reverse, giving trend followers rides to catch and chop to avoid.
+        drift = np.zeros(n)
+        for i in range(1, n):
+            drift[i] = 0.95 * drift[i - 1] + rng.normal(0, 0.0008)
+        noise = rng.normal(0, 0.008, n)
+        log_close = np.cumsum(drift + noise)
+        close = start_price * np.exp(log_close)
+    elif kind == "meanrevert":
+        # OU in log-price around a slowly wandering mean: price overshoots and snaps back.
+        log_mu = np.cumsum(rng.normal(0, 0.0008, n))   # slow drift of the "fair value"
+        logp = np.zeros(n)
+        logp[0] = 0.0
+        kappa = 0.05                                   # reversion speed toward log_mu
+        for i in range(1, n):
+            logp[i] = logp[i - 1] + kappa * (log_mu[i] - logp[i - 1]) + rng.normal(0, 0.02)
+        close = start_price * np.exp(logp)
+    else:
+        raise ValueError("kind must be 'trend' or 'meanrevert'")
+    return _ohlc_from_close(np.asarray(close, dtype=float), rng, timeframe)
+
+
 def _to_frame(rows: list[list]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])

@@ -4,32 +4,74 @@ An automated trading framework built **backtest-first**. The guiding rule of thi
 project is simple: *no real money until we are sure of everything.* Every design
 decision favors honesty about performance over impressive-looking results.
 
+It ships three classic strategy families, a realistic backtester, a paper-trading bot
+that builds an honest track record, adapters to run on popular platforms
+(**MetaTrader 4/5, 3Commas, Cryptohopper**), and everything needed to deploy with
+monitoring and logging.
+
 Two tracks live here:
 
-* **Kalshi (event contracts)** — the current focus. Regulated US prediction markets
-  (`src/kalshi/`), with a real demo/paper sandbox. Natural home for the sports angle.
-* **Crypto (price)** — a trend/momentum framework (`src/`) to move to later.
+* **Crypto / price** (`src/`) — the multi-strategy engine below: trend following, mean
+  reversion, and arbitrage, with backtesting, paper trading, and platform adapters.
+* **Kalshi (event contracts)** (`src/kalshi/`) — regulated US prediction markets with a
+  real demo/paper sandbox (see the Kalshi section near the end).
 
-They are different games (see the Kalshi section) but share the same discipline:
-backtest honestly, model costs, paper-trade first, hard risk limits.
+They are different games but share one discipline: backtest honestly, model costs,
+paper-trade first, hard risk limits.
+
+## The strategies
+
+| Strategy | File | Edge it targets | Wins when… |
+|---|---|---|---|
+| **Trend following** | `strategies/trend_following.py` | Donchian channel breakouts | markets trend |
+| **Trend momentum** | `strategies/trend_momentum.py` | EMA state + momentum | markets trend |
+| **Mean reversion** | `strategies/mean_reversion.py` | z-score / Bollinger reversion | markets range |
+| **Statistical arbitrage** | `arbitrage/pairs.py` | cointegrated spread reversion | a pair stays cointegrated |
+| **Cross-exchange arbitrage** | `arbitrage/cross_exchange.py` | same asset, price gap between venues | a net-of-cost gap exists |
+
+Each source file opens with a comment explaining the idea, the exact rules, and — crucially
+— an **honest note on when the strategy fails**. No strategy works everywhere; a tool that
+claimed to would be overfit. See `RESULTS.md` for measured, per-regime performance.
 
 ## What's here
 
 ```
 src/
-  data/loader.py          Fetch OHLCV from any ccxt exchange (public, no API key)
-                          + a synthetic generator for offline work
+  data/loader.py          Fetch OHLCV from any ccxt exchange (public, no API key),
+                          a synthetic generator, and regime generators (trend/meanrevert)
   strategies/
     base.py               Strategy interface (must not look into the future)
-    trend_momentum.py     First strategy: EMA trend + momentum, long/flat only
+    trend_following.py    Donchian breakout trend follower
+    trend_momentum.py     EMA trend + momentum
+    mean_reversion.py     z-score / Bollinger mean reversion
+    registry.py           Look up + build any strategy by name
+  arbitrage/
+    pairs.py              Statistical arbitrage: cointegrated-spread backtester
+    cross_exchange.py     Live cross-venue spread scanner (net of fees)
   backtest/
     engine.py             Event-driven engine: no lookahead, real fees & slippage
     metrics.py            Sharpe, Sortino, drawdown, profit factor, ...
+  paper/
+    broker.py             Simulated broker: fake money, real prices, real costs
+    paper_trader.py       Paper-trading bot (replay + live), audit log, health state
+  platforms/
+    mt5_adapter.py        Drive MetaTrader 5 from Python + export EA inputs
+    threecommas.py        Send signals to a 3Commas bot (webhook)
+    cryptohopper.py       Send signals to a Cryptohopper hopper (webhook)
+  monitoring/
+    logging_setup.py      Structured JSON logging
+    health.py             /healthz + Prometheus /metrics endpoint
   risk/manager.py         Position sizing, ATR stops, drawdown kill switch
-  live/trader.py          Live/paper skeleton -- SAFETY GATED, not yet sending orders
+  live/trader.py          Live skeleton -- SAFETY GATED, not yet sending orders
+mql/                      Native MetaTrader Expert Advisors (.mq5 / .mq4)
 scripts/
   run_backtest.py         One backtest with a report vs buy & hold
+  run_strategy_comparison.py  All strategies across regimes -> RESULTS.md
+  run_paper_trader.py     Paper trade (replay a track record, or live-poll)
+  dispatch_signal.py      Push the latest signal to a platform (dry-run by default)
+  scan_arbitrage.py       Live cross-exchange arbitrage scan
   validate.py             Walk-forward validation across time folds
+deploy/                   Dockerfile, docker-compose (bot+Prometheus+Grafana), systemd
 tests/                    Correctness tests, including a no-lookahead guard
 config.example.yaml       Copy to config.yaml and edit
 ```
@@ -40,12 +82,17 @@ config.example.yaml       Copy to config.yaml and edit
 pip install -r requirements.txt
 
 # Runs fully offline on synthetic data -- no account or network needed:
-python scripts/run_backtest.py --synthetic
+python scripts/run_backtest.py --synthetic --strategy trend_following
+python scripts/run_strategy_comparison.py           # writes RESULTS.md across regimes
 python scripts/validate.py --synthetic --folds 6
 python -m pytest -q
 
+# Build an honest paper-trading track record (fake money, real cost model):
+python scripts/run_paper_trader.py replay --regime trend --strategy trend_following
+python scripts/run_paper_trader.py replay --regime meanrevert --strategy mean_reversion
+
 # Once you can reach an exchange, use real candles (still no API key -- public data):
-cp config.example.yaml config.yaml   # then edit symbol/exchange/timeframe
+cp config.example.yaml config.yaml   # then edit strategy/symbol/exchange/timeframe
 python scripts/run_backtest.py
 ```
 
@@ -67,22 +114,70 @@ Most retail backtests lie. This engine is built to not.
 3. **Benchmarked.** Every report shows the strategy *and* buy-and-hold side by side. If
    we can't beat simply holding the coin, we don't have an edge.
 
-## What the first strategy does
+## Results — and how to read them honestly
 
-Long-only trend/momentum: go long when the fast EMA is above the slow EMA, price is
-above the slow EMA, and recent momentum is positive; otherwise sit in cash. It uses no
-leverage, no shorting, and no margin — matching a first live account.
+`python scripts/run_strategy_comparison.py` writes `RESULTS.md`: every strategy measured
+across three synthetic regimes, aggregated over many random seeds so no lucky path drives
+the story. The headline finding is the honest one:
 
-Its value is *defense*. On a downtrending sample it stayed ~73% in cash and lost a
-fraction of what holding would have:
+- **On a random walk (GBM), no strategy beats buy-and-hold.** A random walk has no serial
+  structure to exploit — that is a *correct* result, not a failure. What the strategies add
+  there is defense: far smaller drawdowns (~7% vs ~43%).
+- **In a trending regime, the trend strategies profit** (≈ +50%, profitable in ~100% of
+  runs); mean reversion loses — the wrong tool for that market.
+- **In a range-bound regime, mean reversion profits** (≈ +19%, profitable in ~100% of
+  runs); the trend strategies get chopped up.
+- **The pairs-arbitrage demo profits on a cointegrated spread** — but only because that
+  synthetic pair has a *stable* hedge ratio. Real pairs often don't, which is called out.
 
+> These are backtests on **synthetic, idealized** data. They demonstrate the strategy
+> *logic is correct when its assumption holds* — they are **not** forecasts of real-market
+> profit. The paper trader exists precisely so you can test the logic against real prices
+> before believing any of it.
+
+## Running on platforms (MetaTrader, 3Commas, Cryptohopper)
+
+The strategies produce one platform-neutral decision per bar; adapters translate it:
+
+```bash
+# Dry-run: build the exact payload that WOULD be sent (nothing transmitted):
+python scripts/dispatch_signal.py --platform 3commas     --synthetic
+python scripts/dispatch_signal.py --platform cryptohopper --synthetic
+python scripts/dispatch_signal.py --platform mt5          --synthetic
+
+# Send for real: pass --live AND set the platform's secrets in the environment (.env).
+python scripts/dispatch_signal.py --platform 3commas --live
 ```
- metric                      strategy        buy & hold
- total return                  -4.68%           -48.52%
- max drawdown                  -8.43%           -65.76%
+
+- **3Commas / Cryptohopper** run in their own cloud and hold your exchange keys; we only
+  send start/close (webhook) signals. Run `dispatch_signal.py` once per bar on a timer
+  (`deploy/systemd/tradebot-dispatch.timer`).
+- **MetaTrader** has two paths: drive an MT5 terminal from Python (`MT5Adapter`), or — the
+  portable route — run the native **Expert Advisors** in `mql/` (MT4 `.mq4` and MT5 `.mq5`,
+  one per strategy) directly on a MetaTrader VPS. See `mql/README.md`.
+
+## Paper trading — proving the edge before risking money
+
+`run_paper_trader.py` runs any strategy against real prices with **fake money and the same
+fees + slippage** the backtester charges. Two modes: `replay` (walk history fast to produce
+a track record) and `live` (poll the exchange forever, exposing health + metrics). Every
+decision and fill is written to `logs/paper_trades.jsonl` as an audit trail. This is the
+evidence that matters — a clean multi-week paper run beats any backtest number.
+
+## Deploy, monitor, log
+
+See **`DEPLOYMENT.md`** for the full guide. In short:
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d   # bot + Prometheus + Grafana
+curl localhost:8000/healthz                          # JSON health
+curl localhost:8000/metrics                          # Prometheus metrics
 ```
 
-(Numbers from `run_backtest.py --synthetic`; your real-data results will differ.)
+The bot serves `/healthz` (liveness, HTTP 503 if it goes silent) and `/metrics`
+(`tradebot_up`, `tradebot_equity`, `tradebot_trades_total`, …). Logs are structured JSON;
+set `monitoring.json_console: true` for container log shippers. `systemd` units are provided
+for non-Docker VMs.
 
 ## Path to live — do not skip a step
 
@@ -218,5 +313,6 @@ game/outcome — which is kept explicit rather than guessed.
 - **Kalshi:** build the `ticker_map` (Kalshi market <-> sportsbook game) for a live slate.
 - **Kalshi:** a demo paper-trading loop that reads live markets and places sandbox orders.
 - **Kalshi:** collect resolved-market history to backtest the sports edge on real data.
-- **Crypto:** more strategies (mean reversion, breakout, DCA/grid) behind the `Strategy` API.
+- **Crypto:** more strategies (breakout variants, DCA/grid) behind the `Strategy` API.
+- Wire real exchange orders into `src/live/trader.py` (currently a safety-gated skeleton).
 - Telegram/Discord alerting and hard per-day loss limits shared across both tracks.

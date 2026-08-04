@@ -1,0 +1,14 @@
+# Prometheus scrape config for the trading bot.
+# Prometheus pulls /metrics from the bot every 15s; alert rules can then fire on the
+# tradebot_up / tradebot_errors_total series the bot exposes.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "tradebot"
+    metrics_path: /metrics
+    static_configs:
+      # 'tradebot' resolves via the docker-compose network. For a bare-metal deploy,
+      # change to the host:port where run_paper_trader.py live is serving metrics.
+      - targets: ["tradebot:8000"]

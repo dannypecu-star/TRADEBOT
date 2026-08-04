@@ -1,0 +1,18 @@
+# Fire the signal-dispatch service shortly after each hourly bar closes.
+# Adjust OnCalendar to match your trading timeframe (e.g. *:0/5 for 5-minute bars).
+#
+#   sudo cp deploy/systemd/tradebot-dispatch.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tradebot-dispatch.timer
+#   systemctl list-timers tradebot-dispatch.timer
+[Unit]
+Description=Run TRADEBOT signal dispatch once per bar
+
+[Timer]
+# Hourly bars: run at HH:00:30, giving the candle a moment to finalize on the exchange.
+OnCalendar=*:0:30
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

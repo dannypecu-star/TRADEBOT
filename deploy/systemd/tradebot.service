@@ -1,0 +1,32 @@
+# systemd unit for running the paper/live bot directly on a Linux VPS (no Docker).
+#
+# Install:
+#   sudo cp deploy/systemd/tradebot.service /etc/systemd/system/
+#   # edit User, WorkingDirectory, and the EnvironmentFile path below to match your box
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tradebot
+#   journalctl -u tradebot -f          # follow logs
+[Unit]
+Description=TRADEBOT paper/live trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tradebot
+WorkingDirectory=/opt/tradebot
+# Secrets (exchange/platform API keys, live-trade confirmation) live here, mode 0600.
+EnvironmentFile=-/opt/tradebot/.env
+# Paper trading by default. To go live, change the command AND set the live flags in
+# config.yaml + the confirmation env vars (see README "Path to live").
+ExecStart=/usr/bin/python3 scripts/run_paper_trader.py live
+Restart=on-failure
+RestartSec=10
+# Basic hardening: the bot needs no privileges beyond its own directory.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
