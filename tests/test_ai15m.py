@@ -175,7 +175,29 @@ def test_void_market_settles_flat(tmp_path):
 
 
 def test_skip_decision_places_no_order(tmp_path):
-    engine, _, _ = make_engine(tmp_path, direction="SKIP")
+    engine, _, _ = make_engine(tmp_path, direction="SKIP", allow_skip=True)
     engine.step()
     engine.step()
     assert engine.positions == {} and engine.states["BTC"].phase == "AI_SKIPPED"
+
+
+def test_skip_off_forces_side_from_probability(tmp_path):
+    class SkipPredictor(FixedPredictor):
+        def decide(self, ctx):
+            assert ctx["allow_skip"] is False
+            return Decision("SKIP", 0.4, "unsure", "fixed")
+
+    engine, _, _ = make_engine(tmp_path, order_size=10)
+    engine.predictor = SkipPredictor()
+    engine.step()
+    assert engine.positions["BTC"].side == "DOWN"
+
+
+def test_momentum_uses_recent_trend_not_strike():
+    from src.kalshi.ai15m import MomentumPredictor
+    candles = [{"close": c} for c in (100, 100, 100, 100, 100, 100.01)]
+    market = Market("T", T0, strike=100.01)  # session start: strike == spot
+    ctx = {"candles": candles, "market": market, "allow_skip": False}
+    assert MomentumPredictor().decide(ctx).direction == "UP"
+    ctx["allow_skip"] = True                       # 0.01% move is under the skip threshold
+    assert MomentumPredictor().decide(ctx).direction == "SKIP"

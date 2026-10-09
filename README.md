@@ -234,6 +234,8 @@ walks the order book instead of filling everything at the top ask, has a max ent
 a hard cap (sizes down instead of overshooting), and resets the limits at midnight.
 The daily profit/loss limits are **off by default** so test runs collect every market;
 turn them on with `--max-daily-profit 400 --max-daily-loss -200`.
+SKIP is also off by default, so every market gets an UP/DOWN call that is traded and
+scored (the model's probability is still logged); `--allow-skip` brings it back.
 Each Claude call costs a few cents; 96 markets/day per asset adds up, so try
 `--model momentum` first. The model needs a hit rate above the break-even that `--report`
 prints (roughly 53% at 50¢ prices) before any of this is worth real money.

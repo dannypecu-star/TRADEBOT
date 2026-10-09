@@ -57,6 +57,7 @@ class Settings:
     max_entry_price: float = 0.75     # never pay more than this per contract
     min_entry_minutes: float = 2.0    # no new entries with less time left than this
     fee_rate: float = 0.07            # Kalshi general taker fee coefficient
+    allow_skip: bool = False          # False forces UP/DOWN every market so every call is scored
     poll_seconds: float = 1.0
     log_dir: str = "logs"
 
@@ -323,11 +324,16 @@ def build_prompt(ctx: dict) -> str:
                   f"{c['volume']:.4g}" for c in candles]
     else:
         lines.append("Spot candles are unavailable right now.")
-    lines.append(
-        "Will the market resolve YES (price above the strike at close, direction UP) or "
-        "NO (DOWN)? Choose SKIP unless the probability you estimate beats the ask you "
-        "would pay by more than the fee. Give prob_up as your probability (0 to 1) that "
-        "it resolves YES, and a one-sentence reason.")
+    question = ("Will the market resolve YES (price above the strike at close, direction UP) "
+                "or NO (DOWN)? ")
+    if ctx.get("allow_skip", True):
+        question += ("Choose SKIP unless the probability you estimate beats the ask you "
+                     "would pay by more than the fee. ")
+    else:
+        question += ("This is a data-collection run: you must answer UP or DOWN, never SKIP, "
+                     "even when it is close to a coin flip. ")
+    lines.append(question + "Give prob_up as your honest probability (0 to 1) that it "
+                 "resolves YES, and a one-sentence reason.")
     return "\n".join(lines)
 
 
@@ -380,28 +386,30 @@ class ClaudePredictor:
 
 
 class MomentumPredictor:
-    """Free baseline: bet that the price stays on its current side of the strike.
+    """Free baseline: bet that the last few minutes' trend continues.
 
     Useful for testing the plumbing without an API key, and as the bar the AI must beat.
+    It deliberately ignores the strike: at the start of a session the strike is the
+    current price, so "distance from the strike" carries no signal yet.
     """
 
     name = "momentum"
 
-    def __init__(self, min_move: float = 0.0005):
+    def __init__(self, lookback: int = 5, min_move: float = 0.0005):
+        self.lookback = lookback
         self.min_move = min_move
 
     def decide(self, ctx: dict) -> Optional[Decision]:
         candles = ctx["candles"]
-        if len(candles) < 5:
+        if len(candles) <= self.lookback:
             return None
         last = candles[-1]["close"]
-        ref = ctx["market"].strike or candles[-5]["close"]
+        ref = candles[-1 - self.lookback]["close"]
         move = (last - ref) / ref
-        if abs(move) < self.min_move:
-            return Decision("SKIP", 0.5, f"price within {self.min_move:.2%} of {ref}", self.name)
-        direction = "UP" if move > 0 else "DOWN"
-        return Decision(direction, None, f"spot {last} vs reference {ref} ({move:+.3%})",
-                        self.name)
+        reason = f"{self.lookback}m move {move:+.3%} ({ref} -> {last})"
+        if ctx.get("allow_skip", True) and abs(move) < self.min_move:
+            return Decision("SKIP", None, f"{reason}, under {self.min_move:.2%}", self.name)
+        return Decision("UP" if move >= 0 else "DOWN", None, reason, self.name)
 
 
 class PredictorError(RuntimeError):
@@ -571,7 +579,8 @@ class PaperEngine:
     def _request_decision(self, asset: str, st: AssetState, mins: float) -> None:
         self.log(f"{asset} requesting {self.predictor.name} decision with {mins:.2f}m left")
         ctx = {"asset": asset, "market": st.market, "book": st.book, "minutes_left": mins,
-               "candles": self.feed.candles(asset), "fee_rate": self.s.fee_rate}
+               "candles": self.feed.candles(asset), "fee_rate": self.s.fee_rate,
+               "allow_skip": self.s.allow_skip}
         try:
             decision = self.predictor.decide(ctx)
         except PredictorError as e:
@@ -582,6 +591,11 @@ class PaperEngine:
             st.phase, st.note = "AI_FAILED", "no usable decision"
             self.log(f"{asset} predictor returned no usable decision; skipping this session")
             return
+        if decision.direction == "SKIP" and not self.s.allow_skip and decision.prob_up is not None:
+            # SKIP is off for this run: fall back to the side the model's own probability favors.
+            forced = "UP" if decision.prob_up >= 0.5 else "DOWN"
+            decision = Decision(forced, decision.prob_up, f"[forced from SKIP] {decision.reason}",
+                                decision.model)
         st.decision = decision
         side = self.trade_side(decision.direction)
         self.audits[st.ticker] = {

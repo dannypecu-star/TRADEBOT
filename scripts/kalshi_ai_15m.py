@@ -50,6 +50,9 @@ def parse_args() -> argparse.Namespace:
                    help="never pay more than this per contract (default 0.75)")
     p.add_argument("--min-entry-minutes", type=float, default=2.0,
                    help="no new entries with less time left (default 2)")
+    p.add_argument("--allow-skip", action="store_true",
+                   help="let the model SKIP markets (default: always pick UP or DOWN so "
+                        "every market is traded and scored)")
     p.add_argument("--fee-rate", type=float, default=0.07, help="Kalshi taker fee coefficient")
     p.add_argument("--model", default="claude-opus-5-5",
                    help="Claude model id, or 'momentum' for the free baseline")
@@ -71,7 +74,7 @@ def render(engine: PaperEngine, events: deque, started: datetime) -> str:
     s = engine.s
     lines = [
         f"KALSHI AI 15m | PAPER | model {engine.predictor.name} | obey model "
-        f"{'YES' if s.obey_model else 'NO'} | size {s.order_size:g} | limit {s.max_entry_price} | "
+        f"{'YES' if s.obey_model else 'NO'} | skip {'allowed' if s.allow_skip else 'off'} | size {s.order_size:g} | limit {s.max_entry_price} | "
         f"{now.astimezone():%Y-%m-%d %H:%M:%S}",
         "",
         f"{'ASSET':6} {'MARKET':26} {'LEFT':>6} {'UP ask/bid':>12} {'DN ask/bid':>12} "
@@ -152,7 +155,8 @@ def main() -> None:
         assets=args.assets, order_size=args.size, time_delay=args.time_delay,
         obey_model=args.obey_model == "yes", max_daily_profit=args.max_daily_profit,
         max_daily_loss=args.max_daily_loss, max_entry_price=args.max_entry_price,
-        min_entry_minutes=args.min_entry_minutes, fee_rate=args.fee_rate, log_dir=args.log_dir,
+        min_entry_minutes=args.min_entry_minutes, fee_rate=args.fee_rate,
+        allow_skip=args.allow_skip, log_dir=args.log_dir,
     )
     errors = settings.validate()
     if errors:
