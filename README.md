@@ -232,6 +232,8 @@ and model predictions. Compared to the original script, it simulates Kalshi take
 walks the order book instead of filling everything at the top ask, has a max entry price
 (`--max-entry-price`) and entry cutoff (`--min-entry-minutes`), makes the daily loss limit
 a hard cap (sizes down instead of overshooting), and resets the limits at midnight.
+The daily profit/loss limits are **off by default** so test runs collect every market;
+turn them on with `--max-daily-profit 400 --max-daily-loss -200`.
 Each Claude call costs a few cents; 96 markets/day per asset adds up, so try
 `--model momentum` first. The model needs a hit rate above the break-even that `--report`
 prints (roughly 53% at 50¢ prices) before any of this is worth real money.

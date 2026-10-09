@@ -42,8 +42,10 @@ def parse_args() -> argparse.Namespace:
                    help="ask the AI when this many minutes remain; 15 = session start")
     p.add_argument("--obey-model", choices=["yes", "no"], default="yes", type=str.lower,
                    help="'no' trades the opposite of the model")
-    p.add_argument("--max-daily-profit", type=float, default=400, help="0 disables")
-    p.add_argument("--max-daily-loss", type=float, default=-200, help="negative; 0 disables")
+    p.add_argument("--max-daily-profit", type=float, default=0,
+                   help="stop entering for the day at this settled PnL (default 0 = off)")
+    p.add_argument("--max-daily-loss", type=float, default=0,
+                   help="negative hard daily loss cap, e.g. -200 (default 0 = off)")
     p.add_argument("--max-entry-price", type=float, default=0.75,
                    help="never pay more than this per contract (default 0.75)")
     p.add_argument("--min-entry-minutes", type=float, default=2.0,

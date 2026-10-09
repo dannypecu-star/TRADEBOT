@@ -52,8 +52,8 @@ class Settings:
     order_size: float = 300           # contracts per trade (before loss-budget capping)
     time_delay: float = 15            # request the AI when this many minutes remain
     obey_model: bool = True           # False trades the opposite of the model
-    max_daily_profit: float = 400     # stop for the day at this settled PnL; 0 disables
-    max_daily_loss: float = -200      # hard daily loss cap; 0 disables
+    max_daily_profit: float = 0       # stop for the day at this settled PnL; 0 disables
+    max_daily_loss: float = 0         # hard daily loss cap; 0 disables
     max_entry_price: float = 0.75     # never pay more than this per contract
     min_entry_minutes: float = 2.0    # no new entries with less time left than this
     fee_rate: float = 0.07            # Kalshi general taker fee coefficient
