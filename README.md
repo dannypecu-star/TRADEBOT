@@ -213,6 +213,29 @@ The odds math is fully unit-tested offline (`tests/test_odds.py`). The one piece
 needs live data from both sides is `ticker_map` — matching a Kalshi ticker to the right
 game/outcome — which is kept explicit rather than guessed.
 
+### 15-minute crypto AI strategy (runs locally, no account needed)
+
+`scripts/kalshi_ai_15m.py` is a standalone port of the NightShark "Kalshi AI paper
+strategy". It reads Kalshi's **public** market data, asks Claude for UP / DOWN / SKIP on
+each 15-minute BTC/ETH/SOL/XRP/DOGE/HYPE/BNB market, simulates the fill against the live
+order book, and scores it when Kalshi settles the market. It never places an order.
+
+```bash
+python scripts/kalshi_ai_15m.py --model momentum          # free baseline, no API key
+export ANTHROPIC_API_KEY=...                               # Windows: $env:ANTHROPIC_API_KEY="..."
+python scripts/kalshi_ai_15m.py --assets BTC ETH --size 300
+python scripts/kalshi_ai_15m.py --report                   # summarize past runs
+```
+
+You get a live dashboard in the terminal, `logs/ai15m.log`, and CSVs of settled trades
+and model predictions. Compared to the original script, it simulates Kalshi taker fees,
+walks the order book instead of filling everything at the top ask, has a max entry price
+(`--max-entry-price`) and entry cutoff (`--min-entry-minutes`), makes the daily loss limit
+a hard cap (sizes down instead of overshooting), and resets the limits at midnight.
+Each Claude call costs a few cents; 96 markets/day per asset adds up, so try
+`--model momentum` first. The model needs a hit rate above the break-even that `--report`
+prints (roughly 53% at 50¢ prices) before any of this is worth real money.
+
 ## Next steps we can build
 
 - **Kalshi:** build the `ticker_map` (Kalshi market <-> sportsbook game) for a live slate.

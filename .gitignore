@@ -21,3 +21,6 @@ env/
 .DS_Store
 .idea/
 .vscode/
+
+# Strategy run logs
+logs/

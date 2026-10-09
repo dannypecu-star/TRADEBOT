@@ -133,3 +133,25 @@ python scripts\kalshi_paper_trade.py --probs my_probs.json --live
 ```
 
 That's the milestone: real market plumbing, real orders, zero real money.
+
+## Phase 9 — 15-minute crypto AI strategy (no Kalshi key needed)
+
+This one only reads public market data, so you can skip Phases 6–8 for it. In your
+activated PowerShell window:
+
+```powershell
+pip install -r requirements.txt
+python scripts\kalshi_ai_15m.py --model momentum
+```
+
+That runs with a simple free rule instead of the AI so you can check everything works.
+The screen refreshes every second; press **Ctrl+C** to stop. To use Claude, get an API
+key at <https://console.anthropic.com/>, then:
+
+```powershell
+$env:ANTHROPIC_API_KEY="paste-your-key-here"
+python scripts\kalshi_ai_15m.py --assets BTC
+```
+
+See all options with `python scripts\kalshi_ai_15m.py --help`, and a summary of
+everything it has done so far with `python scripts\kalshi_ai_15m.py --report`.
